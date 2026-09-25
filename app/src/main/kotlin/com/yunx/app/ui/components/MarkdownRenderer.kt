@@ -72,14 +72,18 @@ sealed interface MarkdownBlock {
     data class CodeBlock(val language: String?, val code: String) : MarkdownBlock
     /** 引用（>） */
     data class Blockquote(val text: String) : MarkdownBlock
-    /** 无序列表项（- * +） */
-    data class UnorderedListItem(val text: String) : MarkdownBlock
-    /** 有序列表项（1.） */
-    data class OrderedListItem(val number: Int, val text: String) : MarkdownBlock
+    /** 列表项（统一承载有序/无序/任务/嵌套；indent=层级 0 起，每级 2 空格） */
+    data class ListItem(
+        val indent: Int,
+        val ordered: Boolean,
+        val number: Int?,
+        val text: String,
+        val taskDone: Boolean? = null  // 非 null 表示任务列表项
+    ) : MarkdownBlock
     /** 水平线（--- ***） */
     data object HorizontalRule : MarkdownBlock
-    /** 表格行集合（降级：原样文本） */
-    data class Table(val rows: List<String>) : MarkdownBlock
+    /** 表格：首行表头，其余数据行 */
+    data class Table(val header: List<String>, val rows: List<List<String>>) : MarkdownBlock
     /** 独立图片行（整行 ![alt](url)） */
     data class ImageBlock(val url: String, val alt: String) : MarkdownBlock
 }
@@ -153,32 +157,57 @@ fun parseMarkdown(text: String): List<MarkdownBlock> {
             continue
         }
 
-        // 表格行（连续以 | 开头的行）——降级收集
+        // 表格：连续 | 开头的行；第二行是分隔行（:-- / :--: / --:），第三行起为数据
         if (trimmed.startsWith("|")) {
             flushParagraph()
-            val tableRows = mutableListOf<String>()
+            val rawRows = mutableListOf<String>()
             while (i < lines.size && lines[i].trim().startsWith("|")) {
-                tableRows.add(lines[i].trim())
+                rawRows.add(lines[i].trim())
                 i++
             }
-            blocks.add(MarkdownBlock.Table(tableRows))
+            if (rawRows.size >= 2) {
+                fun splitRow(r: String): List<String> =
+                    r.removePrefix("|").removeSuffix("|").split("|").map { it.trim() }
+                val header = splitRow(rawRows[0])
+                // 第二行必须是分隔行（含 ---）
+                val isSeparator = rawRows[1].contains("-")
+                if (isSeparator) {
+                    val dataRows = rawRows.drop(2).map { splitRow(it) }
+                    blocks.add(MarkdownBlock.Table(header, dataRows))
+                    continue
+                }
+            }
+            // 不满足标准表格结构 → 当普通文本
+            blocks.add(MarkdownBlock.Paragraph(rawRows.joinToString("\n")))
             continue
         }
 
-        // 无序列表
-        val ulMatch = Regex("^[-*+]\\s+(.*)$").find(trimmed)
-        if (ulMatch != null) {
+        // 列表项（有序/无序/任务/嵌套）：按行首空格数算 indent
+        // 任务列表：- [ ] / - [x]
+        val taskMatch = Regex("^(\\s*)([-*+])\\s+\\[([ xX])]\\s+(.*)$").find(line)
+        if (taskMatch != null) {
             flushParagraph()
-            blocks.add(MarkdownBlock.UnorderedListItem(ulMatch.groupValues[1]))
+            val indent = taskMatch.groupValues[1].length / 2
+            val done = taskMatch.groupValues[3].equals("x", ignoreCase = true)
+            blocks.add(MarkdownBlock.ListItem(indent = indent.coerceAtMost(6), ordered = false, number = null, text = taskMatch.groupValues[4], taskDone = done))
             i++
             continue
         }
-
-        // 有序列表
-        val olMatch = Regex("^(\\d+)\\.\\s+(.*)$").find(trimmed)
+        // 无序列表（支持缩进）
+        val ulMatch = Regex("^(\\s*)[-*+]\\s+(.*)$").find(line)
+        if (ulMatch != null) {
+            flushParagraph()
+            val indent = ulMatch.groupValues[1].length / 2
+            blocks.add(MarkdownBlock.ListItem(indent = indent.coerceAtMost(6), ordered = false, number = null, text = ulMatch.groupValues[2]))
+            i++
+            continue
+        }
+        // 有序列表（支持缩进）
+        val olMatch = Regex("^(\\s*)(\\d+)\\.\\s+(.*)$").find(line)
         if (olMatch != null) {
             flushParagraph()
-            blocks.add(MarkdownBlock.OrderedListItem(olMatch.groupValues[1].toInt(), olMatch.groupValues[2]))
+            val indent = olMatch.groupValues[1].length / 2
+            blocks.add(MarkdownBlock.ListItem(indent = indent.coerceAtMost(6), ordered = true, number = olMatch.groupValues[2].toInt(), text = olMatch.groupValues[3]))
             i++
             continue
         }
@@ -201,22 +230,35 @@ fun parseMarkdown(text: String): List<MarkdownBlock> {
 
 /**
  * 行内解析：把 **bold**、*italic*、`code`、[text](url)、~~del~~、![alt](url) 转成 AnnotatedString。
- * 未闭合的标记原样保留；链接回调由调用方提供（用于补全相对链接）。
+ * 同时剥除常见 HTML 内联标签（<b>/<i>/<code>/<del>/<kbd>/<br> 等，未知标签剥标签留文本），
+ * 并把裸 http(s) URL 自动转成可点击链接。未闭合的标记原样保留。
  */
 private fun buildInlineAnnotated(
     text: String,
     linkColor: androidx.compose.ui.graphics.Color,
     onLink: (String) -> Unit
 ): AnnotatedString = buildAnnotatedString {
-    var remaining = text
-    // 用一个统一扫描：依次尝试匹配标记，按出现顺序消费
+    // <br> / <br/> → 换行
+    var normalized = Regex("<br\\s*/?>", RegexOption.IGNORE_CASE).replace(text, "\n")
+    // <a href="url">text</a> → [text](url)
+    normalized = Regex("<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", RegexOption.IGNORE_CASE)
+        .replace(normalized) { "[${it.groupValues[2]}](${it.groupValues[1]})" }
+    // 其余 HTML 标签直接剥除（保留内部文本）
+    normalized = Regex("<[^>]+>").replace(normalized, "")
+
+    // token 顺序：图片、链接、粗体、行内代码、删除线、斜体、裸 URL
     val tokenRegex = Regex(
-        """(\*\*[^*]+\*\*)|(\*[^*\s][^*]*\*)|(`[^`]+`)|(\[[^\]]+\]\([^)]+\))|(~~[^~]+~~)|(!\[[^\]]*\]\([^)]+\))"""
+        """(!\[[^\]]*\]\([^)]+\))""" +
+            """|(\[[^\]]+\]\([^)]+\))""" +
+            """|(\*\*[^*]+\*\*)""" +
+            """|(`[^`]+`)""" +
+            """|(~~[^~]+~~)""" +
+            """|(https?://[^\s<>"')\]]+)""" +
+            """|(\*[^*\s][^*]*\*)"""
     )
     var lastIndex = 0
-    for (m in tokenRegex.findAll(text)) {
-        // 匹配前的普通文本
-        if (m.range.first > lastIndex) append(text.substring(lastIndex, m.range.first))
+    for (m in tokenRegex.findAll(normalized)) {
+        if (m.range.first > lastIndex) append(normalized.substring(lastIndex, m.range.first))
         val token = m.value
         when {
             token.startsWith("**") && token.endsWith("**") -> {
@@ -226,7 +268,6 @@ private fun buildInlineAnnotated(
                 append(token.removeSurrounding("`"), SpanStyle(fontFamily = FontFamily.Monospace))
             }
             token.startsWith("![") -> {
-                // 图片：![alt](url) → 「[图片] alt」
                 val alt = Regex("""!\[([^\]]*)\]""").find(token)?.groupValues?.get(1).orEmpty()
                 append(if (alt.isNotBlank()) "[图片] $alt" else "[图片]", SpanStyle(color = linkColor))
             }
@@ -238,12 +279,16 @@ private fun buildInlineAnnotated(
                     pushStringAnnotation(tag = "URL", annotation = url)
                     append(label, SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
                     pop()
-                } else {
-                    append(token)
-                }
+                } else append(token)
             }
             token.startsWith("~~") && token.endsWith("~~") -> {
                 append(token.removeSurrounding("~~"), SpanStyle(textDecoration = TextDecoration.LineThrough))
+            }
+            token.startsWith("http") -> {
+                // 裸 URL 自动链接
+                pushStringAnnotation(tag = "URL", annotation = token)
+                append(token, SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
+                pop()
             }
             token.startsWith("*") && token.endsWith("*") && token.length >= 2 -> {
                 append(token.removeSurrounding("*"), SpanStyle(fontStyle = FontStyle.Italic))
@@ -252,7 +297,7 @@ private fun buildInlineAnnotated(
         }
         lastIndex = m.range.last + 1
     }
-    if (lastIndex < text.length) append(text.substring(lastIndex))
+    if (lastIndex < normalized.length) append(normalized.substring(lastIndex))
 }
 
 /**
@@ -327,9 +372,8 @@ fun MarkdownRenderer(
                             .padding(12.dp)
                     ) {
                         Text(
-                            text = block.code,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace
+                            text = MarkdownCodeHighlighter.highlight(block.code, block.language),
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
@@ -354,25 +398,15 @@ fun MarkdownRenderer(
                         )
                     }
                 }
-                is MarkdownBlock.UnorderedListItem -> {
-                    Row(modifier = Modifier.padding(vertical = 1.dp)) {
-                        Text(text = "•", style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.width(6.dp))
-                        val annotated = buildInlineAnnotated(block.text, linkColor, ::openLink)
-                        ClickableText(
-                            text = annotated,
-                            style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
-                            onClick = { offset ->
-                                annotated.getStringAnnotations("URL", offset, offset)
-                                    .firstOrNull()?.let { openLink(it.item) }
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-                is MarkdownBlock.OrderedListItem -> {
-                    Row(modifier = Modifier.padding(vertical = 1.dp)) {
-                        Text(text = "${block.number}.", style = MaterialTheme.typography.bodySmall)
+                is MarkdownBlock.ListItem -> {
+                    Row(modifier = Modifier.padding(start = (block.indent * 16).dp, top = 1.dp)) {
+                        // 任务列表用方框/勾选；否则按层级轮换圆点
+                        val bullet = when {
+                            block.taskDone != null -> if (block.taskDone) "☑" else "□"
+                            block.ordered -> "${block.number}."
+                            else -> listOf("•", "◦", "▪")[block.indent % 3]
+                        }
+                        Text(text = bullet, style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.width(6.dp))
                         val annotated = buildInlineAnnotated(block.text, linkColor, ::openLink)
                         ClickableText(
@@ -395,15 +429,13 @@ fun MarkdownRenderer(
                             .padding(vertical = 4.dp)
                             .clip(RoundedCornerShape(6.dp))
                             .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .horizontalScroll(rememberScrollState())
                             .padding(8.dp)
                     ) {
+                        // 表头
+                        TableRowCells(cells = block.header, bold = true, linkColor = linkColor, onLink = ::openLink)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
                         block.rows.forEach { row ->
-                            Text(
-                                text = row,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace
-                            )
+                            TableRowCells(cells = row, bold = false, linkColor = linkColor, onLink = ::openLink)
                         }
                     }
                 }
@@ -418,6 +450,33 @@ fun MarkdownRenderer(
                     )
                 }
             }
+        }
+    }
+}
+
+/** 表格一行：列宽均分，表头加粗；空单元格容错补空串。 */
+@Composable
+private fun TableRowCells(
+    cells: List<String>,
+    bold: Boolean,
+    linkColor: androidx.compose.ui.graphics.Color,
+    onLink: (String) -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        cells.forEach { cell ->
+            val annotated = buildInlineAnnotated(cell, linkColor, onLink)
+            ClickableText(
+                text = annotated,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
+                ),
+                onClick = { offset ->
+                    annotated.getStringAnnotations("URL", offset, offset)
+                        .firstOrNull()?.let { onLink(it.item) }
+                },
+                modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
+            )
         }
     }
 }
