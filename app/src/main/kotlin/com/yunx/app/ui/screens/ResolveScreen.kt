@@ -87,6 +87,7 @@ import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.ui.SnackbarController
 import com.mikepenz.markdown.m3.MarkdownText
+import com.yunx.app.ui.components.GitHubMarkdownImageTransformer
 import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.ShareDetailScreen
 import com.yunx.app.ui.viewmodel.BaiduCloudViewModel
@@ -277,9 +278,15 @@ fun ResolveScreen(
                                     val processed = remember(md, owner, repo, branch) {
                                         preprocessReadme(md, owner, repo, branch)
                                     }
+                                    // 注入自定义图片加载器（OkHttp 自研，无 Coil）
+                                    GitHubMarkdownImageTransformer.mirrorPrefix = remember {
+                                        com.yunx.app.data.prefs.SettingsRepository(context)
+                                            .githubMirrorPrefix?.ifBlank { null }
+                                    }
                                     MarkdownText(
                                         content = processed,
-                                        modifier = Modifier.padding(bottom = 8.dp)
+                                        modifier = Modifier.padding(bottom = 8.dp),
+                                        imageTransformer = GitHubMarkdownImageTransformer
                                     )
                                 }
                             }
