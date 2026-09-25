@@ -140,6 +140,10 @@ fun DriveScreen(
     onC139Logout: () -> Unit,
     onPan123Login: () -> Unit,
     onPan123Logout: () -> Unit,
+    /** 是否已配置 GitHub Token（控制 GitHub 卡片副标题与登录态样式） */
+    githubHasToken: Boolean = false,
+    /** 点击 GitHub 卡片：打开 Token 管理弹窗 */
+    onGitHubTokenClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showQuarkSheet by remember { mutableStateOf(false) }
@@ -203,6 +207,14 @@ fun DriveScreen(
         description = pan123Account?.nickname ?: "点击登录，支持解析下载",
         avatarText = "123",
         isLoggedIn = pan123Account != null
+    )
+    // GitHub：把 GitHub 当网盘浏览下载；此处仅做 Token 管理（提升 API 限额），浏览入口在解析页
+    val github = DriveAccount(
+        id = "github",
+        name = "GitHub",
+        description = if (githubHasToken) "已配置 Token" else "点击配置 Token",
+        avatarText = "GH",
+        isLoggedIn = githubHasToken
     )
     val others = remember {
         emptyList<DriveAccount>()
@@ -383,6 +395,13 @@ fun DriveScreen(
                         } else {
                             null
                         }
+                    )
+                }
+                item(key = github.id) {
+                    // GitHub：点击进入 Token 管理（不进入网盘内浏览，浏览从解析页入口）
+                    DriveAccountCard(
+                        account = github,
+                        onClick = onGitHubTokenClick
                     )
                 }
                 items(others, key = { it.id }) { account ->

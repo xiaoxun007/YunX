@@ -79,6 +79,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.yunx.app.data.network.GitHubLinkParser
+import com.yunx.app.data.network.GitHubLinkType
 import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.ui.SnackbarController
@@ -113,6 +115,8 @@ fun ResolveScreen(
     ucCloudViewModel: UCCoudViewModel,
     /** 123 云盘浏览 ViewModel（123 分享转存目录选择用） */
     pan123CloudViewModel: Pan123CloudViewModel,
+    /** 识别到 GitHub 链接时回调（由上层进入 GitHub 浏览 / 直接下载） */
+    onGitHubLink: (GitHubLinkType) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state = viewModel.uiState
@@ -144,7 +148,7 @@ fun ResolveScreen(
             text.isNotBlank() &&
             text != link &&
             text != ignoredClipboard &&
-            ShareLinkParser.parse(text) != null
+            (ShareLinkParser.parse(text) != null || GitHubLinkParser.parse(text) != null)
         ) {
             clipboardSuggestion = text
         }
@@ -246,7 +250,8 @@ fun ResolveScreen(
                         pwd = ""
                         pwdEdited = false
                     },
-                    onClearPwd = { pwd = "" }
+                    onClearPwd = { pwd = "" },
+                    onGitHubLink = onGitHubLink
                 )
             }
         }
@@ -271,15 +276,25 @@ fun ResolveScreen(
                 .padding(16.dp)
         ) {
             animatedSuggestion?.let { suggestion ->
-                val parsed = ShareLinkParser.parse(suggestion)
+                val shareParsed = ShareLinkParser.parse(suggestion)
+                val githubParsed = GitHubLinkParser.parse(suggestion)
                 ClipboardSuggestCard(
-                    platformName = parsed?.platform?.let { platformLabel(it) } ?: "网盘",
+                    platformName = when {
+                        githubParsed != null -> "GitHub"
+                        shareParsed != null -> platformLabel(shareParsed.platform)
+                        else -> "网盘"
+                    },
                     onPaste = {
                         link = suggestion
-                        pwd = parsed?.pwd.orEmpty()
+                        pwd = shareParsed?.pwd.orEmpty()
                         pwdEdited = true
                         clipboardSuggestion = null
-                        viewModel.startResolve(suggestion, parsed?.pwd)
+                        // GitHub 链接不走网盘解析流程，直接回调上层
+                        if (githubParsed != null) {
+                            onGitHubLink(githubParsed)
+                        } else {
+                            viewModel.startResolve(suggestion, shareParsed?.pwd)
+                        }
                     },
                     onDismiss = {
                         ignoredClipboard = suggestion
@@ -333,7 +348,8 @@ private fun ResolveInputContent(
     pwd: String,
     onPwdChange: (String) -> Unit,
     onClearLink: () -> Unit,
-    onClearPwd: () -> Unit
+    onClearPwd: () -> Unit,
+    onGitHubLink: (GitHubLinkType) -> Unit
 ) {
     val isLoading = state is ResolveUiState.Loading
 
@@ -387,7 +403,15 @@ private fun ResolveInputContent(
         )
 
         Button(
-            onClick = { viewModel.startResolve(link, pwd) },
+            onClick = {
+                // 优先识别 GitHub 链接（仓库 / 账号 / 文件直链），不走网盘解析流程
+                val github = GitHubLinkParser.parse(link)
+                if (github != null) {
+                    onGitHubLink(github)
+                } else {
+                    viewModel.startResolve(link, pwd)
+                }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp),

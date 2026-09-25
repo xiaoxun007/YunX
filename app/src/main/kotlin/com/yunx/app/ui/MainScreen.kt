@@ -32,9 +32,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,17 +45,20 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -68,6 +74,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import android.content.res.Configuration
 import android.Manifest
@@ -88,6 +95,9 @@ import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.backup.AuthBackupManager
 import com.yunx.app.data.network.BaiduApi
 import com.yunx.app.data.network.C139Api
+import com.yunx.app.data.network.GitHubApi
+import com.yunx.app.data.network.GitHubLinkType
+import com.yunx.app.data.network.GitHubTokenStore
 import com.yunx.app.data.network.Pan123Api
 import com.yunx.app.data.network.QuarkApi
 import com.yunx.app.data.network.UCApi
@@ -118,6 +128,8 @@ import com.yunx.app.ui.screens.AboutScreen
 import com.yunx.app.ui.screens.BookmarkScreen
 import com.yunx.app.ui.screens.DownloadScreen
 import com.yunx.app.ui.screens.DriveScreen
+import com.yunx.app.ui.screens.GitHubBrowseScreen
+import com.yunx.app.ui.screens.GitHubNode
 import com.yunx.app.ui.screens.OnboardingScreen
 import com.yunx.app.ui.screens.ResolveScreen
 import com.yunx.app.ui.screens.SettingsScreen
@@ -171,6 +183,12 @@ fun MainScreen() {
     var showSupport by rememberSaveable { mutableStateOf(false) }
     var showTheme by rememberSaveable { mutableStateOf(false) }
     var showBookmarks by rememberSaveable { mutableStateOf(false) }
+    // GitHub 浏览：解析页识别到 GitHub 链接后进入全屏浏览；null 表示未进入
+    var githubBrowseNode by remember { mutableStateOf<GitHubNode?>(null) }
+    var githubBrowseLoading by remember { mutableStateOf(false) }
+    // GitHub Token 管理弹窗
+    var showGitHubTokenDialog by remember { mutableStateOf(false) }
+    var githubTokenInput by remember { mutableStateOf("") }
     val saveableStateHolder = rememberSaveableStateHolder()
 
     val context = LocalContext.current
@@ -205,6 +223,8 @@ fun MainScreen() {
     val baiduApi = remember { BaiduApi() }
     val c139Api = remember { C139Api() }
     val pan123Api = remember { Pan123Api() }
+    // GitHub API：Token 从加密存储惰性读取（每次请求实时读取，保存后即时生效）
+    val githubApi = remember { GitHubApi(tokenProvider = { GitHubTokenStore.getToken(context) }) }
     val db = remember { AppDatabase.get(context) }
     val settings = remember { SettingsRepository(context) }
     val repository = remember {
@@ -277,6 +297,39 @@ fun MainScreen() {
                 storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
             deferred.await()
+        }
+    }
+
+    // GitHub 下载：直链先经镜像前缀转换，再入队并切到下载 Tab
+    val enqueueGitHubDownload: (String, String) -> Unit = { url, fileName ->
+        val prefix = settings.githubMirrorPrefix?.ifBlank { null } ?: UpdateChecker.MIRROR_PREFIX
+        scope.launch {
+            downloadManager.enqueue(url = UpdateChecker.mirrorUrl(url, prefix), fileName = fileName)
+            currentTab = MainTab.Download
+        }
+    }
+
+    // 解析页识别到 GitHub 链接后的统一入口：仓库 → getRepo 后进入浏览；账号 → 仓库列表；直链 → 直接下载
+    val handleGitHubLink: (GitHubLinkType) -> Unit = { type ->
+        when (type) {
+            is GitHubLinkType.Repository -> {
+                githubBrowseLoading = true
+                scope.launch {
+                    val repo = githubApi.getRepo(type.owner, type.repo)
+                    githubBrowseLoading = false
+                    if (repo != null) {
+                        githubBrowseNode = GitHubNode.RepoRoot(repo)
+                    } else {
+                        SnackbarController.show("无法打开仓库：${type.owner}/${type.repo}")
+                    }
+                }
+            }
+            is GitHubLinkType.Account -> {
+                githubBrowseNode = GitHubNode.AccountRepos(type.owner, page = 1)
+            }
+            is GitHubLinkType.DirectFile -> {
+                enqueueGitHubDownload(type.url, type.fileName)
+            }
         }
     }
     val viewModel: QuarkAccountViewModel = viewModel(
@@ -590,6 +643,27 @@ fun MainScreen() {
     // 全局 Snackbar 宿主（Material3，替换原 Toast 提示）
     val snackbarHostState = rememberGlobalSnackbarHostState()
 
+    // GitHub 仓库信息加载中（解析页识别到仓库链接后先 getRepo 再进入浏览）
+    if (githubBrowseLoading) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+    // GitHub 浏览：全屏覆盖（自身带 Scaffold/TopAppBar/返回键），替换整个主框架
+    githubBrowseNode?.let { node ->
+        GitHubBrowseScreen(
+            api = githubApi,
+            initialNode = node,
+            scrollBehavior = scrollBehavior,
+            onExit = { githubBrowseNode = null },
+            onDownload = enqueueGitHubDownload,
+            onOpenRepository = { _, _ -> },
+            modifier = Modifier
+        )
+        return
+    }
+
     // 主框架与全屏覆盖层（关于页）放在同一 Box：覆盖层带过渡动画
     Box(modifier = Modifier.fillMaxSize()) {
     // 顶部可折叠大标题（竖屏 / 横屏共用）
@@ -644,7 +718,8 @@ fun MainScreen() {
                         baiduCloudViewModel,
                         c139CloudViewModel,
                         ucCloudViewModel,
-                        pan123CloudViewModel
+                        pan123CloudViewModel,
+                        onGitHubLink = handleGitHubLink
                     )
                     MainTab.Drive -> DriveScreen(
                         scrollBehavior = scrollBehavior,
@@ -673,7 +748,9 @@ fun MainScreen() {
                         onC139Login = { showC139Login = true },
                         onC139Logout = { c139ViewModel.logout() },
                         onPan123Login = { showPan123Login = true },
-                        onPan123Logout = { pan123ViewModel.logout() }
+                        onPan123Logout = { pan123ViewModel.logout() },
+                        githubHasToken = GitHubTokenStore.hasToken(context),
+                        onGitHubTokenClick = { showGitHubTokenDialog = true }
                     )
                     MainTab.Download -> DownloadScreen(scrollBehavior, downloadViewModel)
                     MainTab.Settings -> SettingsScreen(
@@ -892,6 +969,50 @@ fun MainScreen() {
                 }
             )
         }
+    }
+
+    // GitHub Token 管理弹窗：加密存储，输入框用密码样式（不回显完整 Token）
+    if (showGitHubTokenDialog) {
+        AlertDialog(
+            onDismissRequest = { showGitHubTokenDialog = false },
+            title = { Text("GitHub Token") },
+            text = {
+                Column {
+                    Text(
+                        text = "配置 Token 可将 API 限额从 60 次/小时提升至 5000 次/小时。Token 经 Android Keystore 加密存储，不会明文保存，也不会上传。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = githubTokenInput,
+                        onValueChange = { githubTokenInput = it },
+                        label = { Text("Personal Access Token") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    GitHubTokenStore.setToken(context, githubTokenInput)
+                    githubTokenInput = ""
+                    showGitHubTokenDialog = false
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        GitHubTokenStore.setToken(context, null)
+                        githubTokenInput = ""
+                        showGitHubTokenDialog = false
+                    }) { Text("清除") }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { showGitHubTokenDialog = false }) { Text("取消") }
+                }
+            }
+        )
     }
 }
 
