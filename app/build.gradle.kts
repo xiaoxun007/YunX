@@ -33,8 +33,9 @@ android {
         applicationId = "com.yunx.app"
         minSdk = 23
         targetSdk = 34
+        // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分
         versionCode = 10
-        versionName = "1.2.6"
+        versionName = "1.2.6-gh1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
