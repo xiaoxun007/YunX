@@ -4,16 +4,50 @@
 
 > ## 🔀 本 Fork（xiaoxun007/YunX）
 >
-> 基于上游 [CYQawa/YunX](https://github.com/CYQawa/YunX) 的二次开发，在保留全部原有功能的基础上，主要新增：
+> 基于上游 [CYQawa/YunX](https://github.com/CYQawa/YunX) 的二次开发，**保留上游全部原有功能**（网盘分享解析、高速下载、登录、认证备份等），在此基础上新增以下能力。安装包请到本仓库 [Releases](https://github.com/xiaoxun007/YunX/releases) 下载（每次构建自动发布）。
 >
-> - **GitHub 解析器**：把 GitHub 当网盘用——粘贴项目 / 账号 / 文件直链即可浏览代码树、Releases、账号仓库并直接下载，下载复用内置下载器（分片并发 + 断点续传）
-> - **自定义 GitHub 下载镜像**：设置页可配置镜像前缀（如 `https://gh.dpik.top/`），留空回退内置默认镜像，解决国内直连 GitHub 慢 / 失败的问题
-> - **HTTP 代理加速**：设置页可配置本地 / 局域网代理（Clash、v2ray 等），加速 GitHub 及访问困难的网盘下载；一键开关、立即生效、持久化
-> - **GitHub Token 管理**：网盘页新增「GitHub」入口，可填写个人 Token 加密存储（Android Keystore AES-GCM），提升 API 限额
-> - **README 展示**：解析仓库后，在项目根目录直接展示 README 原文
-> - **版本与发布策略**：版本号与上游对齐（如 `1.2.6`），fork 构建追加后缀（如 `1.2.6-gh3`）；每次构建产物自动发布到[本仓库 Releases](https://github.com/xiaoxun007/YunX/releases)
+> ### 1. GitHub 解析器（核心新增）
 >
-> 安装包下载：请前往本仓库 [Releases](https://github.com/xiaoxun007/YunX/releases) 页面获取最新构建。
+> 把 GitHub 当网盘用：在「解析」页粘贴任意 GitHub 链接即可浏览并下载，支持三类链接：
+>
+> | 输入 | 解析结果 |
+> |---|---|
+> | 项目链接 `github.com/owner/repo` | 进入项目根目录，看到 **「代码」** 与 **「Releases」** 两个文件夹；fork 仓库会在根目录显示 `forked from 上游`（可点击直接进入上游仓库） |
+> | 账号/组织链接 `github.com/owner` | 该账号所有可见仓库列表（名称 + 简介 + fork 标识），点击进入对应项目 |
+> | 文件直链（`/releases/download/...`、`/raw/...`、`raw.githubusercontent.com/...`） | 直接解析出该文件并加入下载 |
+>
+> - **「代码」文件夹**：默认分支文件树，逐级浏览，首项固定提供「下载完整源码 ZIP」（codeload 直链，一键打包下载整个仓库）
+> - **「Releases」文件夹**：所有发布版本，每个版本一个子文件夹，内含该版全部资产文件
+> - **懒加载**：默认只解析当前层，点进哪个文件夹才请求哪一层，不一次性拉全树，省流量更流畅
+> - **项目根目录展示 README**：解析后根目录下方直接展示该仓库的 README 原文
+> - **下载**：所有 GitHub 文件下载复用内置下载器（Range 分片并发 + 断点续传），并自动套用你配置的镜像前缀 / HTTP 代理
+>
+> ### 2. 自定义 GitHub 下载镜像
+>
+> 解决国内直连 GitHub 慢 / 失败的问题。设置 → 通用 → **GitHub 下载镜像**：
+> - 输入镜像前缀（如 `https://gh.dpik.top/`、`https://github.akams.cn/`），之后更新弹窗「使用镜像站下载」和 GitHub 文件下载都会走该镜像
+> - 留空 / 点「恢复默认」→ 使用内置默认镜像（`https://cdn.gh-proxy.org/`）
+> - 校验：必须以 `http://` 或 `https://` 开头，自动补全结尾 `/`
+>
+> ### 3. HTTP 代理加速
+>
+> 设置 → 通用 → **网络代理**，可配置本地 / 局域网 HTTP 代理（Clash、v2rayNG 等），加速 GitHub 及访问困难的网盘下载：
+> - 打开「启用代理」→ 填代理主机（手机本地代理填 `127.0.0.1`，电脑/路由器代理填其局域网 IP）与端口（Clash 常见 `7890`）
+> - 保存立即生效、重启后自动恢复；关闭开关即恢复直连，不影响已下载任务
+> - ⚠️ 代理填错会导致网络请求失败，关掉开关即可恢复
+>
+> ### 4. GitHub Token 管理
+>
+> 「网盘」页新增 **GitHub** 入口（与夸克/百度等网盘平级），可填写 / 清除个人访问令牌：
+> - 用途：GitHub 匿名 API 限额为 60 次/小时，解析大树或频繁浏览容易触顶；填入 Token 后限额提升至 5000 次/小时
+> - 生成方式：GitHub → Settings → Developer settings → Personal access tokens → Generate new token（勾选 `repo` 或只读权限即可）
+> - 安全：Token 经 **Android Keystore AES-GCM** 加密存储（密钥不可导出），输入框不回显、不写日志、不明文落盘
+>
+> ### 5. 版本与发布策略
+>
+> - **版本号与上游对齐**：上游发 `1.2.6`，本 fork 即 `1.2.6-gh<n>`；上游升版后后缀从 1 重新计数（如 `1.2.7-gh1`）
+> - **构建自动发布**：GitHub Actions 每次构建成功自动创建/更新对应版本的 Release，产物为 `YunX_release_{版本}.apk`，不依赖 Actions 产物过期
+> - **更新检查兼容**：内置版本比较已兼容 `-gh<n>` 后缀，不会把 fork 版误判为旧版本
 
 ## 支持平台
 
