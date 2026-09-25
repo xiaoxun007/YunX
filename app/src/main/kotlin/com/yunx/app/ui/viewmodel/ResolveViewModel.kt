@@ -32,6 +32,7 @@ import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.BaiduConstants
 import com.yunx.app.data.network.C139Constants
 import com.yunx.app.data.network.GitHubApi
+import com.yunx.app.data.network.GitHubCommitDateCache
 import com.yunx.app.data.network.GitHubLinkParser
 import com.yunx.app.data.network.GitHubLinkType
 import com.yunx.app.data.network.GitHubRepo
@@ -885,13 +886,16 @@ class ResolveViewModel(
         viewModelScope.launch {
             val semaphore = Semaphore(8)
             val timeMap = java.util.concurrent.ConcurrentHashMap<String, String>()
+            val api = githubApi
             coroutineScope {
                 entries.forEach { e ->
                     launch {
                         semaphore.withPermit {
-                            runCatching {
-                                githubApi?.getLastCommitDate(repo.owner, repo.name, e.path)
-                            }.getOrNull()?.let { iso -> timeMap[e.path] = iso }
+                            // 走内存缓存：命中不发请求，失败/限流结果缓存 1 分钟，in-flight 去重
+                            if (api != null) {
+                                GitHubCommitDateCache.get(repo.owner, repo.name, e.path, api)
+                                    ?.let { iso -> timeMap[e.path] = iso }
+                            }
                         }
                     }
                 }
