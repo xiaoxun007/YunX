@@ -189,6 +189,7 @@ fun GitHubBrowseScreen(
                 current == null -> Unit
                 else -> when (val node = current) {
                     is GitHubNode.RepoRoot -> RepoRootContent(
+                        api = api,
                         repo = node.repo,
                         onOpenCode = {
                             backStack.add(
@@ -256,12 +257,19 @@ private fun currentTitle(node: GitHubNode?): String = when (node) {
 
 @Composable
 private fun RepoRootContent(
+    api: GitHubApi,
     repo: GitHubRepo,
     onOpenCode: () -> Unit,
     onOpenReleases: () -> Unit,
     onOpenParent: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // README 原文：RepoRoot 独立请求一次，不阻塞卡片渲染；失败/无 README 为 null（静默隐藏）
+    var readme by remember(repo.fullName) { mutableStateOf<String?>(null) }
+    LaunchedEffect(repo.fullName) {
+        readme = api.getReadme(repo.owner, repo.name, repo.defaultBranch)
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -310,6 +318,32 @@ private fun RepoRootContent(
                 onClick = onOpenReleases
             )
         }
+        // README 原文展示：分隔线 + 标题 + 等宽纯文本（视为不可信文本，仅纯文本展示）
+        readme?.takeIf { it.isNotBlank() }?.let { md ->
+            item(key = "github_readme") {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "README",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = md,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -326,23 +360,12 @@ private fun CodeDirContent(
     var entries by remember(repo.fullName, path, sha) { mutableStateOf<List<GitHubTreeEntry>?>(null) }
     var error by remember(repo.fullName, path, sha) { mutableStateOf(false) }
     var retry by remember { mutableStateOf(0) }
-    // README 原文：仅仓库根目录请求，子目录不请求；加载失败/无 README 时为 null（静默隐藏）
-    var readme by remember(repo.fullName, path) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(repo.fullName, path, sha, retry) {
         entries = null
         error = false
         val r = api.getTree(repo.owner, repo.name, sha)
         if (r == null) error = true else entries = r
-    }
-
-    // README 并行加载，不阻塞文件树显示；仅根目录请求
-    LaunchedEffect(repo.fullName, path) {
-        if (path.isBlank()) {
-            readme = api.getReadme(repo.owner, repo.name, repo.defaultBranch)
-        } else {
-            readme = null
-        }
     }
 
     val branch = repo.defaultBranch
@@ -396,33 +419,6 @@ private fun CodeDirContent(
                             onClick = { onDownload(rawUrl, displayName) }
                         )
                     }
-                }
-            }
-        }
-        // README 原文展示（仅根目录且加载到时）：分隔线 + 标题 + 等宽纯文本
-        readme?.takeIf { it.isNotBlank() }?.let { md ->
-            item(key = "github_readme") {
-                Column(modifier = Modifier.padding(top = 8.dp)) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant)
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "README",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    // 视为不可信文本，仅纯文本展示，不做 HTML/JS 渲染
-                    Text(
-                        text = md,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
         }
