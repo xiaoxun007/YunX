@@ -80,7 +80,7 @@ object GitHubMarkdownImageTransformer : ImageTransformer {
             }
             val client = HttpClients.downloadClient()
             for (candidate in candidates) {
-                val bytes = runCatching {
+                val bytes: ByteArray? = runCatching {
                     semaphore.withPermit {
                         val req = okhttp3.Request.Builder().url(candidate)
                             .header("User-Agent", "YunX").build()
@@ -90,7 +90,7 @@ object GitHubMarkdownImageTransformer : ImageTransformer {
                         }
                     }
                 }.getOrNull()
-                if (!bytes.isNullOrEmpty()) {
+                if (bytes != null && bytes.isNotEmpty()) {
                     val bmp = decodeSampled(bytes)
                     if (bmp != null) {
                         cache[url] = bmp

@@ -86,7 +86,7 @@ import com.yunx.app.data.network.GitHubLinkParser
 import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.ui.SnackbarController
-import com.mikepenz.markdown.m3.MarkdownText
+import com.mikepenz.markdown.m3.Markdown
 import com.yunx.app.ui.components.GitHubMarkdownImageTransformer
 import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.ShareDetailScreen
@@ -283,7 +283,7 @@ fun ResolveScreen(
                                         com.yunx.app.data.prefs.SettingsRepository(context)
                                             .githubMirrorPrefix?.ifBlank { null }
                                     }
-                                    MarkdownText(
+                                    Markdown(
                                         content = processed,
                                         modifier = Modifier.padding(bottom = 8.dp),
                                         imageTransformer = GitHubMarkdownImageTransformer
