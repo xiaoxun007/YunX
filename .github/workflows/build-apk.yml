@@ -72,7 +72,7 @@ jobs:
 
           # 逐行写入 release_notes.md（避免 heredoc 缩进与多行替换的转义问题）
           {
-            echo "## YunX fork 版自动构建（Debug）"
+            echo "## YunX fork 版自动构建（Release）"
             echo ""
             echo "**版本**: ${TAG}"
             echo "**提交**: \`${SHORT_SHA}\`"

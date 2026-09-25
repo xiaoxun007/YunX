@@ -74,8 +74,9 @@ object GitHubMarkdownImageTransformer : ImageTransformer {
     private suspend fun loadBitmap(url: String): android.graphics.Bitmap? =
         withContext(Dispatchers.IO) {
             cache[url]?.let { return@withContext it }
-            // SVG（README badge 等）BitmapFactory 不支持，提前跳过省一次网络请求
-            val ext = url.substringAfterLast('?').substringAfterLast('#').substringAfterLast('.').lowercase()
+            // SVG（README badge 等）BitmapFactory 不支持，提前跳过省一次网络请求；
+            // 带 query 的 svg（如 badge.svg?raw=1）必须先去 query/fragment 再取后缀，否则会误取成 "raw=1"
+            val ext = url.substringBefore('?').substringBefore('#').substringAfterLast('.').lowercase()
             if (ext == "svg") return@withContext null
             // 镜像前缀仅对 GitHub 域生效；外链图（imgur 等）直接直连，避免无谓的失败镜像请求
             val useMirror = !mirrorPrefix.isNullOrBlank() && isGitHubDomain(url)
@@ -106,10 +107,11 @@ object GitHubMarkdownImageTransformer : ImageTransformer {
             null
         }
 
-    /** 是否为 GitHub 系域名（仅这些域套镜像前缀才有意义） */
+    /** 是否为 GitHub 系域名（仅这些域套镜像前缀才有意义）；严格匹配防止 evilgithub.com 等仿冒域被误套 */
     private fun isGitHubDomain(url: String): Boolean {
-        val host = runCatching { java.net.URL(url).host.lowercase() }.getOrNull() ?: return false
-        return host.endsWith("github.com") || host.endsWith("githubusercontent.com")
+        val host = runCatching { java.net.URI(url).host }.getOrNull()?.lowercase() ?: return false
+        return host == "github.com" || host.endsWith(".github.com") ||
+            host == "raw.githubusercontent.com" || host.endsWith(".githubusercontent.com")
     }
 
     /**

@@ -714,5 +714,7 @@ private fun preprocessReadme(md: String, owner: String, repo: String, branch: St
  */
 private fun resolveRel(base: String, rel: String): String {
     if (rel.startsWith("http://") || rel.startsWith("https://") || rel.startsWith("mailto:")) return rel
+    // 含转义括号的链接（如 [a](b\(c\))）按原样保留，不做路径补全，避免被错误补全
+    if (rel.contains('\\')) return rel
     return runCatching { java.net.URI(base).resolve(rel).toString() }.getOrDefault(base + rel)
 }
