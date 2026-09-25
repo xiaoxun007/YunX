@@ -46,10 +46,7 @@ jobs:
           TAG="v${VERSION}"
           ASSET_NAME="YunX_release_${VERSION}.apk"
           APK="app/build/outputs/apk/debug/app-debug.apk"
-          NOTES="自动构建（Debug，fork 版）
-- 版本：${VERSION}
-- 提交：${GITHUB_SHA:0:7}
-- 触发：${GITHUB_EVENT_NAME}"
+          NOTES="自动构建（Debug，fork 版）"$'\n'"- 版本：${VERSION}"$'\n'"- 提交：${GITHUB_SHA:0:7}"$'\n'"- 触发：${GITHUB_EVENT_NAME}"
           cp "$APK" "$ASSET_NAME"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG 已存在，更新资产 $ASSET_NAME"
