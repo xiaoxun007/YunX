@@ -2,6 +2,19 @@
  
 网盘分享链接解析与高速下载的 Android 应用。粘贴分享链接，就能浏览分享内容并直接下载文件。
 
+> ## 🔀 本 Fork（xiaoxun007/YunX）
+>
+> 基于上游 [CYQawa/YunX](https://github.com/CYQawa/YunX) 的二次开发，在保留全部原有功能的基础上，主要新增：
+>
+> - **GitHub 解析器**：把 GitHub 当网盘用——粘贴项目 / 账号 / 文件直链即可浏览代码树、Releases、账号仓库并直接下载，下载复用内置下载器（分片并发 + 断点续传）
+> - **自定义 GitHub 下载镜像**：设置页可配置镜像前缀（如 `https://gh.dpik.top/`），留空回退内置默认镜像，解决国内直连 GitHub 慢 / 失败的问题
+> - **HTTP 代理加速**：设置页可配置本地 / 局域网代理（Clash、v2ray 等），加速 GitHub 及访问困难的网盘下载；一键开关、立即生效、持久化
+> - **GitHub Token 管理**：网盘页新增「GitHub」入口，可填写个人 Token 加密存储（Android Keystore AES-GCM），提升 API 限额
+> - **README 展示**：解析仓库后，在项目根目录直接展示 README 原文
+> - **版本与发布策略**：版本号与上游对齐（如 `1.2.6`），fork 构建追加后缀（如 `1.2.6-gh3`）；每次构建产物自动发布到[本仓库 Releases](https://github.com/xiaoxun007/YunX/releases)
+>
+> 安装包下载：请前往本仓库 [Releases](https://github.com/xiaoxun007/YunX/releases) 页面获取最新构建。
+
 ## 支持平台
 
 **不建议用百度网盘，可能导致账号被风控！！！**
