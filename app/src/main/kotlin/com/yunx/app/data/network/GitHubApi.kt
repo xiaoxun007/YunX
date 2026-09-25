@@ -143,6 +143,7 @@ class GitHubApi(
                     .also { b ->
                         tokenProvider()?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
                     }
+                    .build()
                 client.newCall(apiRequest).execute().use { resp ->
                     if (resp.isSuccessful) {
                         val body = resp.body?.string()
