@@ -5,6 +5,10 @@ on:
     branches: [master, main]
   workflow_dispatch:
 
+# 发布 GitHub Release 需要写权限（默认 token 为只读时会 403）
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
