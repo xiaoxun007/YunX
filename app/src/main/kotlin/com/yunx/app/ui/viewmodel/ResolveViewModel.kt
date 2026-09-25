@@ -31,6 +31,10 @@ import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.BaiduConstants
 import com.yunx.app.data.network.C139Constants
+import com.yunx.app.data.network.GitHubApi
+import com.yunx.app.data.network.GitHubLinkType
+import com.yunx.app.data.network.GitHubRepo
+import com.yunx.app.data.network.GitHubRelease
 import com.yunx.app.data.network.Pan123Constants
 import com.yunx.app.data.network.QuarkConstants
 import com.yunx.app.data.network.QuarkCdn
@@ -41,6 +45,7 @@ import com.yunx.app.data.network.XunleiConstants
 import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareSession
+import com.yunx.app.data.update.UpdateChecker
 import com.yunx.app.data.repository.BaiduAccountRepository
 import com.yunx.app.data.repository.BaiduResolveRepository
 import com.yunx.app.data.repository.C139AccountRepository
@@ -83,7 +88,11 @@ class ResolveViewModel(
     private val pan123AccountRepository: Pan123AccountRepository,
     private val pan123ResolveRepository: Pan123ResolveRepository,
     private val downloadManager: DownloadManager,
-    private val bookmarkDao: BookmarkDao
+    private val bookmarkDao: BookmarkDao,
+    /** GitHub 解析器实例（null 表示未启用 GitHub 平台） */
+    private val githubApi: GitHubApi? = null,
+    /** GitHub 下载镜像前缀提供者（由上层从 SettingsRepository 注入用户配置） */
+    private val mirrorPrefixProvider: () -> String = { UpdateChecker.MIRROR_PREFIX }
 ) : ViewModel() {
 
     var uiState by mutableStateOf<ResolveUiState>(ResolveUiState.Idle)
@@ -380,6 +389,11 @@ class ResolveViewModel(
 
     /** 批量下载：逐个取直链入队（选中文件夹时递归下载整个文件夹并保持目录结构，全部获取完再统一切到下载页） */
     fun batchDownload() {
+        // GitHub 分支：无需凭证/取链 API，逐文件构造直链入队（代码文件夹递归收集 blob）
+        if (currentPlatform == SharePlatform.GITHUB) {
+            batchGitHubDownload()
+            return
+        }
         val files = _selected.toList()
         val s = session ?: return
         viewModelScope.launch {
@@ -469,6 +483,102 @@ class ResolveViewModel(
         }
     }
 
+    /**
+     * GitHub 批量下载：选中的叶子文件直接入队；代码文件夹（github:code:*）递归 getTree 收集 blob；
+     * Releases 文件夹展开为资产；其余（repo 根/账号列表）跳过。全部直链先经镜像前缀转换。
+     */
+    private fun batchGitHubDownload() {
+        val selected = _selected.toList()
+        viewModelScope.launch {
+            isBatchWorking = true
+            batchProgress = "正在收集文件…"
+            batchCancelRequested = false
+            try {
+                val prefix = mirrorPrefixProvider()
+                val tasks = mutableListOf<Triple<String, String, Long>>() // url, fileName, size
+                // 收集文件
+                for (file in selected) {
+                    if (batchCancelRequested) break
+                    when {
+                        // 叶子文件：直接构造 URL
+                        file.fid == "github:zip" || file.fid.startsWith("github:file:") ||
+                            file.fid.startsWith("github:asset:") || file.fid == "github:direct" -> {
+                            githubUrlForFid(file.fid)?.let { url ->
+                                tasks.add(Triple(url, file.fname, file.fsize))
+                            }
+                        }
+                        // 代码文件夹：递归收集 blob（不 recursive，逐层 getTree）
+                        file.fid.startsWith("github:code:") -> {
+                            collectGitHubBlobs(file.fid.removePrefix("github:code:"), "", tasks, 0)
+                        }
+                        // Release 文件夹：展开为资产
+                        file.fid.startsWith("github:release:") -> {
+                            val tag = file.fid.removePrefix("github:release:")
+                            currentGitHubReleases.firstOrNull { it.tagName == tag }?.assets?.forEach { a ->
+                                tasks.add(Triple(a.downloadUrl, a.name, a.size))
+                            }
+                        }
+                        // 其余文件夹（repo 根/账号列表/加载更多）：跳过
+                        else -> {}
+                    }
+                }
+                if (tasks.isEmpty()) {
+                    downloadError = "所选内容无可下载文件"
+                    exitMultiSelect()
+                    return@launch
+                }
+                var okCount = 0
+                for ((index, t) in tasks.withIndex()) {
+                    if (batchCancelRequested) {
+                        downloadError = "已中断批量下载"
+                        break
+                    }
+                    batchProgress = "${index + 1}/${tasks.size}"
+                    runCatching {
+                        downloadManager.enqueue(
+                            url = UpdateChecker.mirrorUrl(t.first, prefix),
+                            fileName = t.second,
+                            size = t.third,
+                            platform = DownloadPlatform.GITHUB
+                        )
+                        okCount++
+                    }
+                }
+                if (!batchCancelRequested) {
+                    downloadError = if (okCount > 0) "已加入 $okCount 个下载任务" else "下载失败"
+                    if (okCount > 0) downloadStarted = true
+                }
+                exitMultiSelect()
+            } finally {
+                isBatchWorking = false
+                batchProgress = null
+                batchCancelRequested = false
+            }
+        }
+    }
+
+    /** 递归收集 GitHub 代码目录下所有 blob 的直链（逐层 getTree，不加 recursive=1） */
+    private suspend fun collectGitHubBlobs(
+        sha: String,
+        prefix: String,
+        result: MutableList<Triple<String, String, Long>>,
+        depth: Int
+    ) {
+        if (depth > 12) return
+        val repo = currentGitHubRepo ?: return
+        val entries = githubApi?.getTree(repo.owner, repo.name, sha) ?: return
+        val branch = repo.defaultBranch
+        for (e in entries) {
+            val displayName = e.path.substringAfterLast('/')
+            if (e.type == "tree") {
+                collectGitHubBlobs(e.sha, if (prefix.isBlank()) displayName else "$prefix/$displayName", result, depth + 1)
+            } else {
+                val url = "https://raw.githubusercontent.com/${repo.owner}/${repo.name}/$branch/${e.path}"
+                result.add(Triple(url, if (prefix.isBlank()) displayName else "$prefix/$displayName", e.size ?: -1))
+            }
+        }
+    }
+
     fun consumeDownloadStarted() {
         downloadStarted = false
     }
@@ -485,6 +595,32 @@ class ResolveViewModel(
     private var currentLink: String? = null
     private var currentPwd: String? = null
 
+    // ---------- GitHub 平台状态 ----------
+
+    /** 当前浏览的 GitHub 仓库（仓库根目录/代码/Releases 时非空） */
+    private var currentGitHubRepo: GitHubRepo? = null
+
+    /** 当前浏览的 GitHub 账号/组织（账号仓库列表时非空） */
+    private var currentGitHubOwner: String? = null
+
+    /** 已累加的 Releases 列表（分页累加） */
+    private val currentGitHubReleases = mutableListOf<GitHubRelease>()
+
+    /** 已累加的账号仓库列表（分页累加） */
+    private val currentGitHubRepos = mutableListOf<GitHubRepo>()
+
+    /** README 原文（仓库根目录加载；纯文本展示，无则 null） */
+    var githubReadme: String? by mutableStateOf(null)
+        private set
+
+    /** forked from 上游全名（fork 仓库根目录显示；非 fork 为 null） */
+    var githubParentFullName: String? by mutableStateOf(null)
+        private set
+
+    /** 文件徽章映射：fid -> 徽章文本（Releases 的 最新/预发布/草稿，账号 repo 的 Fork/语言） */
+    var githubBadges: Map<String, String> by mutableStateOf(emptyMap())
+        private set
+
     /** 当前目录路径名栈（用于面包屑显示），如 [辅助工具, 专用模组] */
     var pathNames by mutableStateOf<List<String>>(emptyList())
         private set
@@ -492,13 +628,17 @@ class ResolveViewModel(
     /** 当前解析平台（QUARK / UC / XUNLEI），由链接自动检测 */
     private var currentPlatform: SharePlatform = SharePlatform.QUARK
 
-    /** 当前平台凭证（夸克/UC/百度/139 用 cookie，迅雷/123 用 access_token） */
+    /** 当前是否为 GitHub 平台（UI 据此渲染 README/forked from/徽章等额外内容） */
+    val isGitHubPlatform: Boolean get() = currentPlatform == SharePlatform.GITHUB
+
+    /** 当前平台凭证（夸克/UC/百度/139 用 cookie，迅雷/123 用 access_token；GitHub 无需凭证） */
     private suspend fun currentCredential(): String? = when (currentPlatform) {
         SharePlatform.UC -> ucAccountRepository.getAccount()?.cookie
         SharePlatform.XUNLEI -> xunleiAccountRepository.getAccount()?.accessToken
         SharePlatform.BAIDU -> baiduAccountRepository.getAccount()?.cookie
         SharePlatform.C139 -> c139AccountRepository.getAccount()?.cookie
         SharePlatform.PAN123 -> pan123AccountRepository.getAccount()?.accessToken
+        SharePlatform.GITHUB -> null
         else -> accountRepository.getAccount()?.cookie
     }
 
@@ -517,6 +657,7 @@ class ResolveViewModel(
         SharePlatform.BAIDU -> ""
         SharePlatform.C139 -> "0"
         SharePlatform.PAN123 -> "0"
+        SharePlatform.GITHUB -> "github:root"
         else -> QuarkConstants.DEFAULT_PDIR_FID
     }
 
@@ -526,6 +667,7 @@ class ResolveViewModel(
         SharePlatform.BAIDU -> "百度网盘"
         SharePlatform.C139 -> "139 网盘"
         SharePlatform.PAN123 -> "123云盘"
+        SharePlatform.GITHUB -> "GitHub"
         else -> "夸克网盘"
     }
 
@@ -561,8 +703,364 @@ class ResolveViewModel(
         }
     }
 
+    // ---------- GitHub 平台入口与导航 ----------
+
+    /**
+     * GitHub 链接解析入口：仓库 → 代码/Releases 根；账号 → 仓库列表；直链 → 直接弹下载确认。
+     * 复用 ShareDetailScreen 框架（搜索/多选/批量/确认弹窗/收藏/面包屑），canSave=false（无转存）。
+     */
+    fun startGitHubResolve(linkType: GitHubLinkType) {
+        currentPlatform = SharePlatform.GITHUB
+        currentPwd = null
+        // 重置 GitHub 状态
+        currentGitHubRepo = null
+        currentGitHubOwner = null
+        currentGitHubReleases.clear()
+        currentGitHubRepos.clear()
+        githubReadme = null
+        githubParentFullName = null
+        githubBadges = emptyMap()
+        dirStack.clear()
+        pathNames = emptyList()
+        viewModelScope.launch {
+            uiState = ResolveUiState.Loading
+            when (linkType) {
+                is GitHubLinkType.Repository -> {
+                    currentLink = "https://github.com/${linkType.owner}/${linkType.repo}"
+                    val repo = githubApi?.getRepo(linkType.owner, linkType.repo)
+                    if (repo == null) {
+                        uiState = ResolveUiState.Error("无法获取仓库信息：${linkType.owner}/${linkType.repo}")
+                        return@launch
+                    }
+                    session = ShareSession(shareId = "github:${repo.fullName}", stoken = "", title = repo.fullName)
+                    currentGitHubRepo = repo
+                    currentDirFid = "github:root"
+                    loadGitHubRoot()
+                }
+                is GitHubLinkType.Account -> {
+                    currentLink = "https://github.com/${linkType.owner}"
+                    session = ShareSession(shareId = "github:user:${linkType.owner}", stoken = "", title = linkType.owner)
+                    currentGitHubOwner = linkType.owner
+                    currentDirFid = "github:account_root"
+                    loadGitHubAccountRepos(firstPage = true)
+                }
+                is GitHubLinkType.DirectFile -> {
+                    currentLink = linkType.url
+                    session = ShareSession(shareId = "github:direct", stoken = "", title = linkType.fileName)
+                    // 直链：直接构造 DownloadLink 弹确认弹窗（不进入文件列表）
+                    downloadLink = DownloadLink(
+                        fid = "github:direct",
+                        filename = linkType.fileName,
+                        downloadUrl = linkType.url,
+                        size = -1
+                    )
+                    uiState = ResolveUiState.Idle
+                }
+            }
+        }
+    }
+
+    /** 点击「forked from」：跳转到上游仓库根目录 */
+    fun openGitHubParentRepo() {
+        val parent = githubParentFullName ?: return
+        val owner = parent.substringBefore('/')
+        val repoName = parent.substringAfter('/')
+        viewModelScope.launch {
+            uiState = ResolveUiState.Loading
+            // 从父仓库进入：重置当前仓库上下文，回到顶层仓库根
+            dirStack.clear()
+            pathNames = emptyList()
+            val repo = githubApi?.getRepo(owner, repoName)
+            if (repo == null) {
+                uiState = ResolveUiState.Error("无法打开上游仓库：$parent")
+                return@launch
+            }
+            session = ShareSession(shareId = "github:${repo.fullName}", stoken = "", title = repo.fullName)
+            currentGitHubRepo = repo
+            currentDirFid = "github:root"
+            loadGitHubRoot()
+        }
+    }
+
+    /** 根目录：代码 + Releases 两个文件夹；并行加载 README 与 forked-from 标记 */
+    private suspend fun loadGitHubRoot() {
+        val repo = currentGitHubRepo ?: return
+        githubParentFullName = if (repo.fork) repo.parentFullName else null
+        githubBadges = emptyMap()
+        // README 并行加载，不阻塞根目录列表
+        viewModelScope.launch {
+            githubReadme = githubApi?.getReadme(repo.owner, repo.name, repo.defaultBranch)
+        }
+        val files = listOf(
+            ShareFile(
+                fid = "github:code:${repo.defaultBranch}",
+                fname = "代码",
+                fsize = -1,
+                isdir = true,
+                pdirFid = "",
+                fidToken = "",
+                modifyTime = repo.defaultBranch
+            ),
+            ShareFile(
+                fid = "github:releases",
+                fname = "Releases",
+                fsize = -1,
+                isdir = true,
+                pdirFid = "",
+                fidToken = ""
+            )
+        )
+        uiState = ResolveUiState.Detail(session!!, files)
+    }
+
+    /** 代码目录：tree（不 recursive）映射为文件夹/文件；根代码目录首项加源码 ZIP */
+    private suspend fun loadGitHubCodeDir(sha: String) {
+        val repo = currentGitHubRepo ?: return
+        val entries = githubApi?.getTree(repo.owner, repo.name, sha)
+        if (entries == null) {
+            uiState = ResolveUiState.Error("加载目录失败")
+            return
+        }
+        val files = mutableListOf<ShareFile>()
+        // 根代码目录（sha == 默认分支）首项：下载完整源码 ZIP
+        if (sha == repo.defaultBranch) {
+            files.add(
+                ShareFile(
+                    fid = "github:zip",
+                    fname = "下载完整源码 ZIP",
+                    fsize = -1,
+                    isdir = false,
+                    pdirFid = "",
+                    fidToken = "",
+                    modifyTime = "${repo.name}-${repo.defaultBranch}.zip"
+                )
+            )
+        }
+        for (e in entries) {
+            val displayName = e.path.substringAfterLast('/')
+            if (e.type == "tree") {
+                files.add(
+                    ShareFile(
+                        fid = "github:code:${e.sha}",
+                        fname = displayName,
+                        fsize = -1,
+                        isdir = true,
+                        pdirFid = "",
+                        fidToken = ""
+                    )
+                )
+            } else {
+                files.add(
+                    ShareFile(
+                        fid = "github:file:${e.path}",
+                        fname = displayName,
+                        fsize = e.size ?: -1,
+                        isdir = false,
+                        pdirFid = "",
+                        fidToken = ""
+                    )
+                )
+            }
+        }
+        uiState = ResolveUiState.Detail(session!!, files)
+    }
+
+    /** Releases 列表：分页累加；首个非预发布非草稿标记为「最新」；满页加「加载更多」 */
+    private suspend fun loadGitHubReleases(firstPage: Boolean, page: Int = 1) {
+        val repo = currentGitHubRepo ?: return
+        if (firstPage) {
+            currentGitHubReleases.clear()
+        }
+        val rels = githubApi?.getReleases(repo.owner, repo.name, page = page)
+        if (rels == null && page == 1) {
+            uiState = ResolveUiState.Error("加载 Releases 失败")
+            return
+        }
+        if (rels != null) currentGitHubReleases.addAll(rels)
+        // 计算徽章：第一个非预发布非草稿 = 最新；其余按 prerelease/draft
+        val badgeMap = mutableMapOf<String, String>()
+        var latestMarked = false
+        for (rel in currentGitHubReleases) {
+            val fid = "github:release:${rel.tagName}"
+            when {
+                rel.draft -> badgeMap[fid] = "草稿"
+                rel.prerelease -> badgeMap[fid] = "预发布"
+                !latestMarked -> {
+                    badgeMap[fid] = "最新"
+                    latestMarked = true
+                }
+            }
+        }
+        githubBadges = badgeMap
+        val files = currentGitHubReleases.map { rel ->
+            ShareFile(
+                fid = "github:release:${rel.tagName}",
+                fname = rel.tagName,
+                fsize = -1,
+                isdir = true,
+                pdirFid = "",
+                fidToken = "",
+                modifyTime = rel.publishedAt ?: ""
+            )
+        }.toMutableList()
+        // 满页（100 条）追加「加载更多」虚拟文件夹
+        if (rels != null && rels.size == 100) {
+            files.add(
+                ShareFile(
+                    fid = "github:more_rel:${page + 1}",
+                    fname = "加载更多",
+                    fsize = -1,
+                    isdir = true,
+                    pdirFid = "",
+                    fidToken = ""
+                )
+            )
+        }
+        uiState = ResolveUiState.Detail(session!!, files)
+    }
+
+    /** 单个 Release 的资产列表 */
+    private suspend fun loadGitHubReleaseAssets(tag: String) {
+        val rel = currentGitHubReleases.firstOrNull { it.tagName == tag }
+        if (rel == null) {
+            uiState = ResolveUiState.Error("未找到 Release：$tag")
+            return
+        }
+        githubBadges = emptyMap()
+        val files = rel.assets.map { a ->
+            ShareFile(
+                fid = "github:asset:${a.downloadUrl}",
+                fname = a.name,
+                fsize = a.size,
+                isdir = false,
+                pdirFid = "",
+                fidToken = ""
+            )
+        }
+        uiState = ResolveUiState.Detail(session!!, files)
+    }
+
+    /** 账号/组织仓库列表：users 失败回退 orgs；分页累加；满页加「加载更多」 */
+    private suspend fun loadGitHubAccountRepos(firstPage: Boolean, page: Int = 1) {
+        val owner = currentGitHubOwner ?: return
+        if (firstPage) {
+            currentGitHubRepos.clear()
+        }
+        // users 失败回退 orgs（账号 vs 组织自动识别）
+        var repos = githubApi?.getUserRepos(owner, page = page)
+        if (repos == null) repos = githubApi?.getOrgRepos(owner, page = page)
+        if (repos == null && page == 1) {
+            uiState = ResolveUiState.Error("无法获取 $owner 的仓库列表")
+            return
+        }
+        if (repos != null) currentGitHubRepos.addAll(repos)
+        // 徽章：fork 标记 + 主语言
+        val badgeMap = mutableMapOf<String, String>()
+        for (r in currentGitHubRepos) {
+            val fid = "github:repo:${r.fullName}"
+            val parts = buildList {
+                if (r.fork) add("Fork")
+                r.language?.let { add(it) }
+            }
+            if (parts.isNotEmpty()) badgeMap[fid] = parts.joinToString(" · ")
+        }
+        githubBadges = badgeMap
+        val files = currentGitHubRepos.map { r ->
+            ShareFile(
+                fid = "github:repo:${r.fullName}",
+                fname = r.name,
+                fsize = -1,
+                isdir = true,
+                pdirFid = "",
+                fidToken = ""
+            )
+        }.toMutableList()
+        if (repos != null && repos.size == 100) {
+            files.add(
+                ShareFile(
+                    fid = "github:more_acct:${page + 1}",
+                    fname = "加载更多",
+                    fsize = -1,
+                    isdir = true,
+                    pdirFid = "",
+                    fidToken = ""
+                )
+            )
+        }
+        uiState = ResolveUiState.Detail(session!!, files)
+    }
+
+    /** 按 fid 分发加载对应目录层 */
+    private suspend fun loadGitHubDir(fid: String) {
+        when {
+            fid == "github:root" -> loadGitHubRoot()
+            fid.startsWith("github:code:") -> loadGitHubCodeDir(fid.removePrefix("github:code:"))
+            fid == "github:releases" -> loadGitHubReleases(firstPage = true)
+            fid.startsWith("github:release:") -> loadGitHubReleaseAssets(fid.removePrefix("github:release:"))
+            fid == "github:account_root" -> loadGitHubAccountRepos(firstPage = true)
+            fid.startsWith("github:more_rel:") -> {
+                val p = fid.removePrefix("github:more_rel:").toIntOrNull() ?: return
+                loadGitHubReleases(firstPage = false, page = p)
+            }
+            fid.startsWith("github:more_acct:") -> {
+                val p = fid.removePrefix("github:more_acct:").toIntOrNull() ?: return
+                loadGitHubAccountRepos(firstPage = false, page = p)
+            }
+            fid.startsWith("github:repo:") -> {
+                val fullName = fid.removePrefix("github:repo:")
+                val owner = fullName.substringBefore('/')
+                val repoName = fullName.substringAfter('/')
+                val repo = githubApi?.getRepo(owner, repoName)
+                if (repo == null) {
+                    uiState = ResolveUiState.Error("无法打开仓库：$fullName")
+                    return
+                }
+                currentGitHubRepo = repo
+                githubReadme = null
+                loadGitHubRoot()
+            }
+            else -> uiState = ResolveUiState.Error("未知目录：$fid")
+        }
+    }
+
+    /** 根据 GitHub fid 计算下载直链（raw / codeload / asset url / 直链）；无法识别返回 null */
+    private fun githubUrlForFid(fid: String): String? {
+        val repo = currentGitHubRepo ?: return null
+        val branch = repo.defaultBranch
+        return when {
+            fid == "github:zip" ->
+                "https://codeload.github.com/${repo.owner}/${repo.name}/zip/refs/heads/$branch"
+            fid.startsWith("github:file:") -> {
+                val path = fid.removePrefix("github:file:")
+                "https://raw.githubusercontent.com/${repo.owner}/${repo.name}/$branch/$path"
+            }
+            fid.startsWith("github:asset:") -> fid.removePrefix("github:asset:")
+            // github:direct（直链）在 startGitHubResolve 已直接设置 downloadLink，不走此方法
+            else -> null
+        }
+    }
+
     /** 进入文件夹 */
     fun openFolder(file: ShareFile) {
+        // GitHub 分支：fid 前缀分发，无需网盘凭证
+        if (currentPlatform == SharePlatform.GITHUB) {
+            // 「加载更多」虚拟项：原地追加分页，不入目录栈
+            if (file.fid.startsWith("github:more_")) {
+                viewModelScope.launch {
+                    uiState = ResolveUiState.Loading
+                    loadGitHubDir(file.fid)
+                }
+                return
+            }
+            dirStack.addLast(currentDirFid)
+            pathNames = pathNames + file.fname
+            currentDirFid = file.fid
+            viewModelScope.launch {
+                uiState = ResolveUiState.Loading
+                loadGitHubDir(file.fid)
+            }
+            return
+        }
         val s = session ?: return
         dirStack.addLast(currentDirFid)
         pathNames = pathNames + file.fname
@@ -580,6 +1078,17 @@ class ResolveViewModel(
 
     /** 返回上级目录 */
     fun goBack() {
+        // GitHub 分支：无需凭证，按 fid 重新加载对应层
+        if (currentPlatform == SharePlatform.GITHUB) {
+            if (dirStack.isEmpty()) return
+            currentDirFid = dirStack.removeLast()
+            pathNames = pathNames.dropLast(1)
+            viewModelScope.launch {
+                uiState = ResolveUiState.Loading
+                loadGitHubDir(currentDirFid)
+            }
+            return
+        }
         val s = session ?: return
         if (dirStack.isEmpty()) return
         currentDirFid = dirStack.removeLast()
@@ -608,6 +1117,14 @@ class ResolveViewModel(
         currentLink = null
         currentPwd = null
         pathNames = emptyList()
+        // 重置 GitHub 平台状态
+        currentGitHubRepo = null
+        currentGitHubOwner = null
+        currentGitHubReleases.clear()
+        currentGitHubRepos.clear()
+        githubReadme = null
+        githubParentFullName = null
+        githubBadges = emptyMap()
         uiState = ResolveUiState.Idle
     }
 
@@ -639,21 +1156,54 @@ class ResolveViewModel(
      * 当前所在层（level == pathNames.size）无需操作。
      */
     fun navigateToLevel(level: Int) {
-        val s = session ?: return
         if (level < 0 || level > pathNames.size) return
         if (level == pathNames.size) return
         // 弹出目录栈直到对应层级；level=0 时回到分享根目录
         while (dirStack.size > level) dirStack.removeLast()
         currentDirFid = if (dirStack.isEmpty()) currentDefaultDirFid() else dirStack.last()
         pathNames = pathNames.take(level)
+        // GitHub 分支：无需凭证，按 fid 重新加载
+        if (currentPlatform == SharePlatform.GITHUB) {
+            viewModelScope.launch {
+                uiState = ResolveUiState.Loading
+                loadGitHubDir(currentDirFid)
+            }
+            return
+        }
+        val s = session ?: return
         viewModelScope.launch {
             val credential = currentCredential() ?: return@launch
             loadFiles(s, currentDirFid, credential, currentRepo())
         }
     }
 
-    /** 获取文件下载直链（各平台实现不同：夸克转存后取 / UC 直接取 / 迅雷转存后取详情直链） */
+    /** 获取文件下载直链（各平台实现不同：夸克转存后取 / UC 直接取 / 迅雷转存后取详情直链；GitHub 直接构造 URL） */
     fun fetchDownloadLink(file: ShareFile) {
+        // GitHub 分支：无需 API 取链，按 fid 直接构造下载 URL 弹确认弹窗
+        if (currentPlatform == SharePlatform.GITHUB) {
+            viewModelScope.launch {
+                downloadLink = null
+                downloadError = null
+                isFetchingDownloadLink = true
+                try {
+                    // 直链文件（DirectFile）在 startGitHubResolve 已设置 downloadLink；这里仅处理列表内文件
+                    val url = githubUrlForFid(file.fid)
+                    if (url == null) {
+                        downloadError = "无法获取下载链接"
+                        return@launch
+                    }
+                    downloadLink = DownloadLink(
+                        fid = file.fid,
+                        filename = file.fname,
+                        downloadUrl = url,
+                        size = file.fsize
+                    )
+                } finally {
+                    isFetchingDownloadLink = false
+                }
+            }
+            return
+        }
         viewModelScope.launch {
             downloadLink = null
             downloadError = null
@@ -786,6 +1336,18 @@ class ResolveViewModel(
         viewModelScope.launch {
             // 开始下载：先关闭弹窗（临时转存由下载完成 onComplete 清理，不在此时删）
             downloadLink = null
+            // GitHub 分支：无需网盘凭证，直链先经镜像前缀转换，带 size 和 platform=github 入队
+            if (currentPlatform == SharePlatform.GITHUB) {
+                val prefix = mirrorPrefixProvider()
+                downloadManager.enqueue(
+                    url = UpdateChecker.mirrorUrl(link.downloadUrl, prefix),
+                    fileName = link.filename,
+                    size = link.size,
+                    platform = DownloadPlatform.GITHUB
+                )
+                downloadStarted = true
+                return@launch
+            }
             val credential = currentCredential()
             if (credential.isNullOrBlank()) {
                 downloadError = "请先登录网盘"
@@ -825,7 +1387,9 @@ class ResolveViewModel(
         private val pan123AccountRepository: Pan123AccountRepository,
         private val pan123ResolveRepository: Pan123ResolveRepository,
         private val downloadManager: DownloadManager,
-        private val bookmarkDao: BookmarkDao
+        private val bookmarkDao: BookmarkDao,
+        private val githubApi: GitHubApi? = null,
+        private val mirrorPrefixProvider: () -> String = { UpdateChecker.MIRROR_PREFIX }
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -838,7 +1402,9 @@ class ResolveViewModel(
                 c139AccountRepository, c139ResolveRepository,
                 pan123AccountRepository, pan123ResolveRepository,
                 downloadManager,
-                bookmarkDao
+                bookmarkDao,
+                githubApi,
+                mirrorPrefixProvider
             ) as T
         }
     }

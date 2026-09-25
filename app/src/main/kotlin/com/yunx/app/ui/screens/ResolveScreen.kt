@@ -31,9 +31,11 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -75,12 +77,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.yunx.app.data.network.GitHubLinkParser
-import com.yunx.app.data.network.GitHubLinkType
 import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.ui.SnackbarController
@@ -115,8 +117,6 @@ fun ResolveScreen(
     ucCloudViewModel: UCCoudViewModel,
     /** 123 云盘浏览 ViewModel（123 分享转存目录选择用） */
     pan123CloudViewModel: Pan123CloudViewModel,
-    /** 识别到 GitHub 链接时回调（由上层进入 GitHub 浏览 / 直接下载） */
-    onGitHubLink: (GitHubLinkType) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state = viewModel.uiState
@@ -231,7 +231,62 @@ fun ResolveScreen(
                     // 顶部左上角返回：退出文件页回到输入页（输入框内容保留）
                     onExit = { viewModel.backToInput() },
                     // 列表「返回上一级」：子目录回上级，根目录回输入页
-                    onBack = { viewModel.navigateBack() }
+                    onBack = { viewModel.navigateBack() },
+                    // GitHub 专属：forked from 头部、README 底部、文件徽章
+                    extraHeaderContent = if (viewModel.isGitHubPlatform) {
+                        {
+                            val parent = viewModel.githubParentFullName
+                            if (parent != null) {
+                                TextButton(
+                                    onClick = { viewModel.openGitHubParentRepo() },
+                                    contentPadding = PaddingValues(vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "forked from $parent",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    } else null,
+                    extraFooterContent = if (viewModel.isGitHubPlatform) {
+                        {
+                            val md = viewModel.githubReadme
+                            if (!md.isNullOrBlank()) {
+                                Column(modifier = Modifier.padding(top = 12.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(1.dp)
+                                            .background(MaterialTheme.colorScheme.outlineVariant)
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        text = "README",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    // 视为不可信文本，仅纯文本展示，不做 HTML/JS 渲染
+                                    Text(
+                                        text = md,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    } else null,
+                    fileBadge = if (viewModel.isGitHubPlatform) {
+                        { file ->
+                            val label = viewModel.githubBadges[file.fid]
+                            if (!label.isNullOrBlank()) {
+                                GitHubBadge(label)
+                            }
+                        }
+                    } else null
                 )
                 is ResolveUiState.Loading -> LoadingContent()
                 else -> ResolveInputContent(
@@ -250,8 +305,7 @@ fun ResolveScreen(
                         pwd = ""
                         pwdEdited = false
                     },
-                    onClearPwd = { pwd = "" },
-                    onGitHubLink = onGitHubLink
+                    onClearPwd = { pwd = "" }
                 )
             }
         }
@@ -289,9 +343,9 @@ fun ResolveScreen(
                         pwd = shareParsed?.pwd.orEmpty()
                         pwdEdited = true
                         clipboardSuggestion = null
-                        // GitHub 链接不走网盘解析流程，直接回调上层
+                        // GitHub 链接走 ViewModel 的 GitHub 解析入口（复用 ShareDetailScreen 框架）
                         if (githubParsed != null) {
-                            onGitHubLink(githubParsed)
+                            viewModel.startGitHubResolve(githubParsed)
                         } else {
                             viewModel.startResolve(suggestion, shareParsed?.pwd)
                         }
@@ -348,8 +402,7 @@ private fun ResolveInputContent(
     pwd: String,
     onPwdChange: (String) -> Unit,
     onClearLink: () -> Unit,
-    onClearPwd: () -> Unit,
-    onGitHubLink: (GitHubLinkType) -> Unit
+    onClearPwd: () -> Unit
 ) {
     val isLoading = state is ResolveUiState.Loading
 
@@ -404,10 +457,10 @@ private fun ResolveInputContent(
 
         Button(
             onClick = {
-                // 优先识别 GitHub 链接（仓库 / 账号 / 文件直链），不走网盘解析流程
+                // 优先识别 GitHub 链接（仓库 / 账号 / 文件直链），走 ViewModel 的 GitHub 解析入口
                 val github = GitHubLinkParser.parse(link)
                 if (github != null) {
-                    onGitHubLink(github)
+                    viewModel.startGitHubResolve(github)
                 } else {
                     viewModel.startResolve(link, pwd)
                 }
@@ -554,5 +607,29 @@ private fun ClipboardSuggestCard(
                 }
             }
         }
+    }
+}
+/**
+ * GitHub 文件徽章：紧凑彩色标签。
+ * 最新=绿、预发布=橙、草稿=灰、其余（Fork/语言）=中性次要色。
+ */
+@Composable
+private fun GitHubBadge(label: String) {
+    val (bg, fg) = when (label) {
+        "最新" -> androidx.compose.ui.graphics.Color(0xFF2DA44E) to androidx.compose.ui.graphics.Color.White
+        "预发布" -> androidx.compose.ui.graphics.Color(0xFFBF8700) to androidx.compose.ui.graphics.Color.White
+        "草稿" -> androidx.compose.ui.graphics.Color(0xFF6E7681) to androidx.compose.ui.graphics.Color.White
+        else -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
+    }
+    Box(
+        modifier = Modifier
+            .background(bg, shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = fg
+        )
     }
 }

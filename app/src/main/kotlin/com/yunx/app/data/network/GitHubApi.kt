@@ -172,7 +172,8 @@ class GitHubApi(
             description = o.optString("description").ifBlank { null },
             fork = o.optBoolean("fork", false),
             parentFullName = parent?.optString("full_name")?.takeIf { it.isNotBlank() },
-            defaultBranch = o.optString("default_branch").ifBlank { "main" }
+            defaultBranch = o.optString("default_branch").ifBlank { "main" },
+            language = o.optString("language").ifBlank { null }
         )
     }
 
@@ -197,7 +198,9 @@ class GitHubApi(
             tagName = o.optString("tag_name"),
             name = o.optString("name").ifBlank { null },
             publishedAt = o.optString("published_at").ifBlank { null },
-            assets = assets
+            assets = assets,
+            prerelease = o.optBoolean("prerelease", false),
+            draft = o.optBoolean("draft", false)
         )
     }
 

@@ -35,8 +35,8 @@ android {
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
         // versionCode：历史 gh1~gh3 均为 10（当时未同步递增），自 gh4 起每次 fork 发版 +1
-        versionCode = 11
-        versionName = "1.2.6-gh4"
+        versionCode = 12
+        versionName = "1.2.6-gh5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

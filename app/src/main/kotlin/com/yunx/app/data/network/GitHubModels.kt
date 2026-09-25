@@ -36,7 +36,9 @@ data class GitHubRepo(
     /** 仅 fork 仓库有值（从 API 的 parent.full_name 取）；非 fork 或列表项无 parent 时为 null */
     val parentFullName: String?,
     /** 默认分支名（如 main / master） */
-    val defaultBranch: String
+    val defaultBranch: String,
+    /** 主语言（API language 字段，可能为 null） */
+    val language: String? = null
 ) {
     /** 仓库属主（从 fullName = "owner/repo" 拆分） */
     val owner: String get() = fullName.substringBefore('/', name)
@@ -58,7 +60,11 @@ data class GitHubRelease(
     val name: String?,
     /** 发布时间（ISO8601 字符串） */
     val publishedAt: String?,
-    val assets: List<GitHubAsset>
+    val assets: List<GitHubAsset>,
+    /** 是否预发布（prerelease=true） */
+    val prerelease: Boolean = false,
+    /** 是否草稿（draft=true，不可公开下载） */
+    val draft: Boolean = false
 )
 
 /** GitHub Release 资产（可下载文件） */

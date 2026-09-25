@@ -96,7 +96,6 @@ import com.yunx.app.data.backup.AuthBackupManager
 import com.yunx.app.data.network.BaiduApi
 import com.yunx.app.data.network.C139Api
 import com.yunx.app.data.network.GitHubApi
-import com.yunx.app.data.network.GitHubLinkType
 import com.yunx.app.data.network.GitHubTokenStore
 import com.yunx.app.data.network.Pan123Api
 import com.yunx.app.data.network.QuarkApi
@@ -128,8 +127,6 @@ import com.yunx.app.ui.screens.AboutScreen
 import com.yunx.app.ui.screens.BookmarkScreen
 import com.yunx.app.ui.screens.DownloadScreen
 import com.yunx.app.ui.screens.DriveScreen
-import com.yunx.app.ui.screens.GitHubBrowseScreen
-import com.yunx.app.ui.screens.GitHubNode
 import com.yunx.app.ui.screens.OnboardingScreen
 import com.yunx.app.ui.screens.ResolveScreen
 import com.yunx.app.ui.screens.SettingsScreen
@@ -183,9 +180,6 @@ fun MainScreen() {
     var showSupport by rememberSaveable { mutableStateOf(false) }
     var showTheme by rememberSaveable { mutableStateOf(false) }
     var showBookmarks by rememberSaveable { mutableStateOf(false) }
-    // GitHub 浏览：解析页识别到 GitHub 链接后进入全屏浏览；null 表示未进入
-    var githubBrowseNode by remember { mutableStateOf<GitHubNode?>(null) }
-    var githubBrowseLoading by remember { mutableStateOf(false) }
     // GitHub Token 管理弹窗
     var showGitHubTokenDialog by remember { mutableStateOf(false) }
     var githubTokenInput by remember { mutableStateOf("") }
@@ -300,38 +294,6 @@ fun MainScreen() {
         }
     }
 
-    // GitHub 下载：直链先经镜像前缀转换，再入队并切到下载 Tab
-    val enqueueGitHubDownload: (String, String) -> Unit = { url, fileName ->
-        val prefix = settings.githubMirrorPrefix?.ifBlank { null } ?: UpdateChecker.MIRROR_PREFIX
-        scope.launch {
-            downloadManager.enqueue(url = UpdateChecker.mirrorUrl(url, prefix), fileName = fileName)
-            currentTab = MainTab.Download
-        }
-    }
-
-    // 解析页识别到 GitHub 链接后的统一入口：仓库 → getRepo 后进入浏览；账号 → 仓库列表；直链 → 直接下载
-    val handleGitHubLink: (GitHubLinkType) -> Unit = { type ->
-        when (type) {
-            is GitHubLinkType.Repository -> {
-                githubBrowseLoading = true
-                scope.launch {
-                    val repo = githubApi.getRepo(type.owner, type.repo)
-                    githubBrowseLoading = false
-                    if (repo != null) {
-                        githubBrowseNode = GitHubNode.RepoRoot(repo)
-                    } else {
-                        SnackbarController.show("无法打开仓库：${type.owner}/${type.repo}")
-                    }
-                }
-            }
-            is GitHubLinkType.Account -> {
-                githubBrowseNode = GitHubNode.AccountRepos(type.owner, page = 1)
-            }
-            is GitHubLinkType.DirectFile -> {
-                enqueueGitHubDownload(type.url, type.fileName)
-            }
-        }
-    }
     val viewModel: QuarkAccountViewModel = viewModel(
         factory = QuarkAccountViewModel.Factory(repository)
     )
@@ -481,7 +443,9 @@ fun MainScreen() {
             pan123Repository,
             pan123ResolveRepository,
             downloadManager,
-            db.bookmarkDao()
+            db.bookmarkDao(),
+            githubApi,
+            { settings.githubMirrorPrefix?.ifBlank { null } ?: UpdateChecker.MIRROR_PREFIX }
         )
     )
     val downloadViewModel: DownloadViewModel = viewModel(
@@ -643,27 +607,6 @@ fun MainScreen() {
     // 全局 Snackbar 宿主（Material3，替换原 Toast 提示）
     val snackbarHostState = rememberGlobalSnackbarHostState()
 
-    // GitHub 仓库信息加载中（解析页识别到仓库链接后先 getRepo 再进入浏览）
-    if (githubBrowseLoading) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
-        }
-        return
-    }
-    // GitHub 浏览：全屏覆盖（自身带 Scaffold/TopAppBar/返回键），替换整个主框架
-    githubBrowseNode?.let { node ->
-        GitHubBrowseScreen(
-            api = githubApi,
-            initialNode = node,
-            scrollBehavior = scrollBehavior,
-            onExit = { githubBrowseNode = null },
-            onDownload = enqueueGitHubDownload,
-            onOpenRepository = { _, _ -> },
-            modifier = Modifier
-        )
-        return
-    }
-
     // 主框架与全屏覆盖层（关于页）放在同一 Box：覆盖层带过渡动画
     Box(modifier = Modifier.fillMaxSize()) {
     // 顶部可折叠大标题（竖屏 / 横屏共用）
@@ -718,8 +661,7 @@ fun MainScreen() {
                         baiduCloudViewModel,
                         c139CloudViewModel,
                         ucCloudViewModel,
-                        pan123CloudViewModel,
-                        onGitHubLink = handleGitHubLink
+                        pan123CloudViewModel
                     )
                     MainTab.Drive -> DriveScreen(
                         scrollBehavior = scrollBehavior,
