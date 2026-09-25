@@ -74,8 +74,13 @@ object GitHubMarkdownImageTransformer : ImageTransformer {
     private suspend fun loadBitmap(url: String): android.graphics.Bitmap? =
         withContext(Dispatchers.IO) {
             cache[url]?.let { return@withContext it }
+            // SVG（README badge 等）BitmapFactory 不支持，提前跳过省一次网络请求
+            val ext = url.substringAfterLast('?').substringAfterLast('#').substringAfterLast('.').lowercase()
+            if (ext == "svg") return@withContext null
+            // 镜像前缀仅对 GitHub 域生效；外链图（imgur 等）直接直连，避免无谓的失败镜像请求
+            val useMirror = !mirrorPrefix.isNullOrBlank() && isGitHubDomain(url)
             val candidates = buildList {
-                if (!mirrorPrefix.isNullOrBlank()) add(UpdateChecker.mirrorUrl(url, mirrorPrefix!!))
+                if (useMirror) add(UpdateChecker.mirrorUrl(url, mirrorPrefix!!))
                 add(url)
             }
             val client = HttpClients.downloadClient()
@@ -100,6 +105,12 @@ object GitHubMarkdownImageTransformer : ImageTransformer {
             }
             null
         }
+
+    /** 是否为 GitHub 系域名（仅这些域套镜像前缀才有意义） */
+    private fun isGitHubDomain(url: String): Boolean {
+        val host = runCatching { java.net.URL(url).host.lowercase() }.getOrNull() ?: return false
+        return host.endsWith("github.com") || host.endsWith("githubusercontent.com")
+    }
 
     /**
      * 降采样解码：先读边界尺寸，再按「总像素上限」算 inSampleSize（2 的幂）。

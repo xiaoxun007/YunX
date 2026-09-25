@@ -44,8 +44,11 @@ data class GitHubRepo(
     /** 最近一次 push 时间（API pushed_at，ISO8601；用于 ZIP 条目时间，可能为 null） */
     val pushedAt: String? = null
 ) {
-    /** 仓库属主（从 fullName = "owner/repo" 拆分） */
-    val owner: String get() = fullName.substringBefore('/', name)
+    /** 仓库属主（从 fullName = "owner/repo" 拆分）；异常 fullName 兜底为整串，避免返回空串导致后续 URL 拼错 */
+    val owner: String get() {
+        val idx = fullName.indexOf('/')
+        return if (idx > 0) fullName.substring(0, idx) else fullName
+    }
 }
 
 /** Git Tree 条目（目录或文件） */

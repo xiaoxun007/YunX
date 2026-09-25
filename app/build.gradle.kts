@@ -25,6 +25,12 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// fork 分发用固定 release 签名：CI runner 不同会导致 debug keystore 每次变化、
+// 跨版本无法覆盖安装。这里读取随仓库公开的 keystore.properties（fork 专用，非官方发布密钥）。
+val keystoreProperties = java.util.Properties().apply {
+    runCatching { load(file("keystore.properties").inputStream()) }
+}
+
 android {
     namespace = "com.yunx.app"
     compileSdk = 36
@@ -34,9 +40,9 @@ android {
         minSdk = 23
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
-        // versionCode：历史 gh1~gh3 均为 10（当时未同步递增），自 gh4 起每次 fork 发版 +1（gh4=11, gh5=12, gh6=13, gh7=14, gh8=15, gh9=16, gh10=17, gh11=18, gh12=19, gh13=20）
-        versionCode = 20
-        versionName = "1.2.6-gh13"
+        // versionCode：历史 gh1~gh3 均为 10（当时未同步递增），自 gh4 起每次 fork 发版 +1（gh4=11, gh5=12, gh6=13, gh7=14, gh8=15, gh9=16, gh10=17, gh11=18, gh12=19, gh13=20, gh14=21）
+        versionCode = 21
+        versionName = "1.2.6-gh14"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -48,18 +54,28 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        // 固定 release 签名：跨版本可覆盖安装（仅当 keystore.properties 存在时配置，
+        // 本地未配置时 release 变体回退到 debug 签名，不阻断构建）。
+        if (keystoreProperties.isNotEmpty()) {
+            create("release") {
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
+        }
     }
 
     buildTypes {
         debug {
             signingConfig = signingConfigs.getByName("debug")
         }
-        // Release 变体：R8 代码混淆 + 资源压缩瘦身；用 debug 签名便于直接安装测试。
+        // Release 变体：R8 代码混淆 + 资源压缩瘦身；用固定 release 签名（见上），跨版本可覆盖安装。
         // 注意：R8 可能误删反射/序列化类，已在 proguard-rules.pro 补 Room 等 keep 规则。
         getByName("release") {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

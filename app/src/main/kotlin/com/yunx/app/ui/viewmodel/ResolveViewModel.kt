@@ -584,7 +584,7 @@ class ResolveViewModel(
             if (e.type == "tree") {
                 collectGitHubBlobs(e.sha, if (prefix.isBlank()) displayName else "$prefix/$displayName", result, depth + 1)
             } else {
-                val url = "https://raw.githubusercontent.com/${repo.owner}/${repo.name}/$branch/${e.path}"
+                val url = "https://raw.githubusercontent.com/${repo.owner}/${repo.name}/$branch/${encodePath(e.path)}"
                 result.add(Triple(url, if (prefix.isBlank()) displayName else "$prefix/$displayName", e.size ?: -1))
             }
         }
@@ -1098,13 +1098,20 @@ class ResolveViewModel(
                 "https://codeload.github.com/${repo.owner}/${repo.name}/zip/refs/heads/$branch"
             fid.startsWith("github:file:") -> {
                 val path = fid.removePrefix("github:file:")
-                "https://raw.githubusercontent.com/${repo.owner}/${repo.name}/$branch/$path"
+                "https://raw.githubusercontent.com/${repo.owner}/${repo.name}/$branch/${encodePath(path)}"
             }
             fid.startsWith("github:asset:") -> fid.removePrefix("github:asset:")
             // github:direct（直链）在 startGitHubResolve 已直接设置 downloadLink，不走此方法
             else -> null
         }
     }
+
+    /**
+     * 对 raw 直链路径逐段 URL 编码（保留 `/` 分隔符）。
+     * 文件名含 `#`/`?`/空格/中文等字符时，未编码会导致 URL 在 `#`/`?` 处截断。
+     */
+    private fun encodePath(path: String): String =
+        path.split('/').joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8") }
 
     /** 进入文件夹 */
     fun openFolder(file: ShareFile) {

@@ -694,23 +694,25 @@ private fun preprocessReadme(md: String, owner: String, repo: String, branch: St
     var out = Regex("!\\[([^]]*)\\]\\(([^)]+)\\)").replace(md) { m ->
         val alt = m.groupValues[1]
         val url = m.groupValues[2].trim()
-        val resolved = if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:")) {
-            url
-        } else {
-            rawBase + url.removePrefix("./").removePrefix("/")
-        }
+        val resolved = resolveRel(rawBase, url)
         "![$alt]($resolved)"
     }
     // 普通链接 [text](url)（排除已处理的图片）
     out = Regex("(?<!!)\\[([^]]+)\\]\\(([^)]+)\\)").replace(out) { m ->
         val label = m.groupValues[1]
         val url = m.groupValues[2].trim()
-        val resolved = if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:")) {
-            url
-        } else {
-            blobBase + url.removePrefix("./").removePrefix("/")
-        }
+        val resolved = resolveRel(blobBase, url)
         "[$label]($resolved)"
     }
     return out
+}
+
+/**
+ * 把 README 相对链接补全为绝对 URL。
+ * - 绝对 URL（http/https/mailto）原样返回；
+ * - 相对路径用 URI.resolve 处理 `./`、`../`（上溯目录），避免 `../` 被当作普通路径段拼错。
+ */
+private fun resolveRel(base: String, rel: String): String {
+    if (rel.startsWith("http://") || rel.startsWith("https://") || rel.startsWith("mailto:")) return rel
+    return runCatching { java.net.URI(base).resolve(rel).toString() }.getOrDefault(base + rel)
 }

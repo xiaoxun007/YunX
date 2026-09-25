@@ -182,7 +182,8 @@ fun MainScreen() {
     var showBookmarks by rememberSaveable { mutableStateOf(false) }
     // GitHub Token 管理弹窗
     var showGitHubTokenDialog by remember { mutableStateOf(false) }
-    var githubTokenInput by remember { mutableStateOf("") }
+    // 用 rememberSaveable：屏幕旋转时保留已输入的 Token（避免误触旋转丢失输入）
+    var githubTokenInput by rememberSaveable { mutableStateOf("") }
     val saveableStateHolder = rememberSaveableStateHolder()
 
     val context = LocalContext.current
