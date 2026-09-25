@@ -232,6 +232,8 @@ fun GitHubBrowseScreen(
                         onOpenRepo = { owner, repo -> openRepository(owner, repo) },
                         onLoadMore = { backStack.add(GitHubNode.AccountRepos(node.owner, node.page + 1)) }
                     )
+                    // current 在上层已做 null 检查，但编译器无法智能传播到捕获变量，显式补 null 分支
+                    null -> Unit
                 }
             }
         }
