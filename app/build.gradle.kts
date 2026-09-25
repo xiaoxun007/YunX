@@ -56,7 +56,7 @@ android {
         }
         // Release 变体：R8 代码混淆 + 资源压缩瘦身；用 debug 签名便于直接安装测试。
         // 注意：R8 可能误删反射/序列化类，已在 proguard-rules.pro 补 Room 等 keep 规则。
-        create("release") {
+        getByName("release") {
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("debug")
