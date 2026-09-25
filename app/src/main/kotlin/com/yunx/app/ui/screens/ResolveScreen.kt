@@ -272,12 +272,17 @@ fun ResolveScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Spacer(Modifier.height(4.dp))
-                                    // 自研轻量 Markdown 渲染：标题/粗体/代码块/列表/引用/链接
+                                    // 自研轻量 Markdown 渲染：标题/粗体/代码块/列表/引用/链接/图片
+                                    val mirrorPrefix = remember {
+                                        com.yunx.app.data.prefs.SettingsRepository(context)
+                                            .githubMirrorPrefix?.ifBlank { null }
+                                    }
                                     MarkdownRenderer(
                                         text = md,
                                         repoOwner = owner,
                                         repoName = repo,
                                         defaultBranch = branch,
+                                        mirrorPrefix = mirrorPrefix,
                                         modifier = Modifier.padding(bottom = 8.dp)
                                     )
                                 }

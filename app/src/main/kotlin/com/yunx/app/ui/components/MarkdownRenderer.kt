@@ -80,6 +80,8 @@ sealed interface MarkdownBlock {
     data object HorizontalRule : MarkdownBlock
     /** 表格行集合（降级：原样文本） */
     data class Table(val rows: List<String>) : MarkdownBlock
+    /** 独立图片行（整行 ![alt](url)） */
+    data class ImageBlock(val url: String, val alt: String) : MarkdownBlock
 }
 
 /**
@@ -182,6 +184,14 @@ fun parseMarkdown(text: String): List<MarkdownBlock> {
         }
 
         // 普通行：累积到段落
+        // 整行独立图片 ![alt](url) → ImageBlock
+        val imgMatch = Regex("^!\\[([^]]*)\\]\\(([^)]+)\\)$").find(trimmed)
+        if (imgMatch != null) {
+            flushParagraph()
+            blocks.add(MarkdownBlock.ImageBlock(imgMatch.groupValues[2], imgMatch.groupValues[1]))
+            i++
+            continue
+        }
         paraBuf.add(line)
         i++
     }
@@ -257,6 +267,7 @@ fun MarkdownRenderer(
     repoOwner: String,
     repoName: String,
     defaultBranch: String,
+    mirrorPrefix: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -395,6 +406,16 @@ fun MarkdownRenderer(
                             )
                         }
                     }
+                }
+                is MarkdownBlock.ImageBlock -> {
+                    MarkdownImage(
+                        imageUrl = block.url,
+                        alt = block.alt,
+                        repoOwner = repoOwner,
+                        repoName = repoName,
+                        defaultBranch = defaultBranch,
+                        mirrorPrefix = mirrorPrefix
+                    )
                 }
             }
         }
