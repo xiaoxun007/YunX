@@ -41,8 +41,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+      - name: Build debug & release APK
+        # release 变体带 R8 混淆+资源压缩，编译验证一并做（避免 R8 错误只靠发布流程发现）
+        run: ./gradlew assembleDebug assembleRelease --no-daemon
 
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --no-daemon

@@ -106,11 +106,15 @@
 
 要求：minSdk 21，targetSdk 34。
 
+本 fork 源码：
+
 ```
-git clone https://github.com/CYQawa/YunX.git
+git clone https://github.com/xiaoxun007/YunX.git
 ```
 
 用 Android Studio 打开项目直接构建即可。项目在 AndroidIDE 上开发调试，理论上也兼容其它 Android 构建环境。
+
+> 发布物说明：本 fork 的 Releases 产物为 **Release 构建**（R8 混淆 + 资源压缩，体积约 4MB，使用 debug keystore 签名，可直接安装）；`assembleRelease` 即可复现。
 
 ## 免责声明
 
