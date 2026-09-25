@@ -87,6 +87,11 @@ import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.ui.SnackbarController
 import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.model.DefaultMarkdownTypography
+import com.mikepenz.markdown.model.TextLinkStyles
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import com.yunx.app.ui.components.GitHubMarkdownImageTransformer
 import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.ShareDetailScreen
@@ -283,9 +288,37 @@ fun ResolveScreen(
                                         com.yunx.app.data.prefs.SettingsRepository(context)
                                             .githubMirrorPrefix?.ifBlank { null }
                                     }
+                                    // 紧凑字号：对齐 GitHub 移动端观感（正文 14sp、标题逐级收紧、行距 1.35 倍）
+                                    val compactTypography = remember {
+                                        fun body(size: Int, bold: Boolean = false) = TextStyle(
+                                            fontSize = size.sp,
+                                            lineHeight = (size * 1.35f).toInt().sp,
+                                            fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                        DefaultMarkdownTypography(
+                                            text = body(14),
+                                            code = body(13),
+                                            inlineCode = body(13),
+                                            h1 = body(20, true),
+                                            h2 = body(18, true),
+                                            h3 = body(16, true),
+                                            h4 = body(15, true),
+                                            h5 = body(14, true),
+                                            h6 = body(14, true),
+                                            quote = body(13),
+                                            paragraph = body(14),
+                                            ordered = body(14),
+                                            bullet = body(14),
+                                            list = body(14),
+                                            link = body(14),
+                                            textLink = TextLinkStyles(),
+                                            table = body(13)
+                                        )
+                                    }
                                     Markdown(
                                         content = processed,
                                         modifier = Modifier.padding(bottom = 8.dp),
+                                        typography = compactTypography,
                                         imageTransformer = GitHubMarkdownImageTransformer
                                     )
                                 }
