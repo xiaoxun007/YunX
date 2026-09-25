@@ -34,9 +34,9 @@ android {
         minSdk = 23
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
-        // versionCode：历史 gh1~gh3 均为 10（当时未同步递增），自 gh4 起每次 fork 发版 +1
-        versionCode = 12
-        versionName = "1.2.6-gh5"
+        // versionCode：历史 gh1~gh3 均为 10（当时未同步递增），自 gh4 起每次 fork 发版 +1（gh4=11, gh5=12, gh6=13）
+        versionCode = 13
+        versionName = "1.2.6-gh6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -58,6 +58,11 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    testOptions {
+        // 单元测试中 android.util.Log 等桩方法返回默认值（否则一调用就抛 "Stub!"）
+        unitTests.isReturnDefaultValues = true
     }
 
     compileOptions {
