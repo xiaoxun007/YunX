@@ -86,6 +86,7 @@ import com.yunx.app.data.network.GitHubLinkParser
 import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.ui.SnackbarController
+import com.yunx.app.ui.components.MarkdownRenderer
 import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.ShareDetailScreen
 import com.yunx.app.ui.viewmodel.BaiduCloudViewModel
@@ -253,7 +254,10 @@ fun ResolveScreen(
                     extraFooterContent = if (viewModel.isGitHubPlatform) {
                         {
                             val md = viewModel.githubReadme
-                            if (!md.isNullOrBlank()) {
+                            val owner = viewModel.githubRepoOwner
+                            val repo = viewModel.githubRepoName
+                            val branch = viewModel.githubDefaultBranch
+                            if (!md.isNullOrBlank() && owner != null && repo != null && branch != null) {
                                 Column(modifier = Modifier.padding(top = 12.dp)) {
                                     Box(
                                         modifier = Modifier
@@ -268,12 +272,13 @@ fun ResolveScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Spacer(Modifier.height(4.dp))
-                                    // 视为不可信文本，仅纯文本展示，不做 HTML/JS 渲染
-                                    Text(
+                                    // 自研轻量 Markdown 渲染：标题/粗体/代码块/列表/引用/链接
+                                    MarkdownRenderer(
                                         text = md,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        repoOwner = owner,
+                                        repoName = repo,
+                                        defaultBranch = branch,
+                                        modifier = Modifier.padding(bottom = 8.dp)
                                     )
                                 }
                             }

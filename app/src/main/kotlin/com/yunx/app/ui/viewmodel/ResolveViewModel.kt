@@ -639,6 +639,13 @@ class ResolveViewModel(
     /** 当前是否为 GitHub 平台（UI 据此渲染 README/forked from/徽章等额外内容） */
     val isGitHubPlatform: Boolean get() = currentPlatform == SharePlatform.GITHUB
 
+    /** README 渲染用：当前仓库 owner（账号/组织浏览或无仓库时为 null） */
+    val githubRepoOwner: String? get() = currentGitHubRepo?.owner
+    /** README 渲染用：当前仓库名 */
+    val githubRepoName: String? get() = currentGitHubRepo?.name
+    /** README 渲染用：默认分支（用于相对链接补全） */
+    val githubDefaultBranch: String? get() = currentGitHubRepo?.defaultBranch
+
     /** 当前平台凭证（夸克/UC/百度/139 用 cookie，迅雷/123 用 access_token；GitHub 无需凭证） */
     private suspend fun currentCredential(): String? = when (currentPlatform) {
         SharePlatform.UC -> ucAccountRepository.getAccount()?.cookie
