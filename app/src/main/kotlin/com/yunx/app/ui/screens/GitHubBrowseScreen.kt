@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.background
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -63,6 +64,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.yunx.app.data.network.GitHubApi
@@ -324,12 +326,23 @@ private fun CodeDirContent(
     var entries by remember(repo.fullName, path, sha) { mutableStateOf<List<GitHubTreeEntry>?>(null) }
     var error by remember(repo.fullName, path, sha) { mutableStateOf(false) }
     var retry by remember { mutableStateOf(0) }
+    // README 原文：仅仓库根目录请求，子目录不请求；加载失败/无 README 时为 null（静默隐藏）
+    var readme by remember(repo.fullName, path) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(repo.fullName, path, sha, retry) {
         entries = null
         error = false
         val r = api.getTree(repo.owner, repo.name, sha)
         if (r == null) error = true else entries = r
+    }
+
+    // README 并行加载，不阻塞文件树显示；仅根目录请求
+    LaunchedEffect(repo.fullName, path) {
+        if (path.isBlank()) {
+            readme = api.getReadme(repo.owner, repo.name, repo.defaultBranch)
+        } else {
+            readme = null
+        }
     }
 
     val branch = repo.defaultBranch
@@ -383,6 +396,33 @@ private fun CodeDirContent(
                             onClick = { onDownload(rawUrl, displayName) }
                         )
                     }
+                }
+            }
+        }
+        // README 原文展示（仅根目录且加载到时）：分隔线 + 标题 + 等宽纯文本
+        readme?.takeIf { it.isNotBlank() }?.let { md ->
+            item(key = "github_readme") {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "README",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    // 视为不可信文本，仅纯文本展示，不做 HTML/JS 渲染
+                    Text(
+                        text = md,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

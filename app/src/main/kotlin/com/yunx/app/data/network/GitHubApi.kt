@@ -124,6 +124,43 @@ class GitHubApi(
             }.getOrNull()
         }
 
+    /**
+     * 获取仓库 README 原文（Markdown）。
+     * - 优先 GET /repos/{owner}/{repo}/readme，Accept: application/vnd.github.raw（返回纯文本，自动识别 README.md/readme.rst 等）；
+     * - 404 视为无 README，返回 null；
+     * - API 网络失败时兜底请求 raw.githubusercontent.com/{owner}/{repo}/{defaultBranch}/README.md；
+     * - 全部失败返回 null，不抛异常。
+     */
+    suspend fun getReadme(owner: String, repo: String, defaultBranch: String): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                // 1) API readme 接口（原始 Markdown）
+                val apiRequest = Request.Builder()
+                    .url("https://api.github.com/repos/$owner/$repo/readme")
+                    .header("User-Agent", "YunX")
+                    .header("Accept", "application/vnd.github.raw")
+                    .get()
+                    .also { b ->
+                        tokenProvider()?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
+                    }
+                client.newCall(apiRequest).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()
+                        if (!body.isNullOrBlank()) return@runCatching body
+                    }
+                    // 404 或空：继续兜底
+                }
+                // 2) 兜底：raw README.md
+                val rawRequest = buildRequest(
+                    "https://raw.githubusercontent.com/$owner/$repo/$defaultBranch/README.md"
+                )
+                client.newCall(rawRequest).execute().use { resp ->
+                    if (!resp.isSuccessful) return@runCatching null
+                    resp.body?.string()?.takeIf { it.isNotBlank() }
+                }
+            }.getOrNull()
+        }
+
     // ---------- 内部解析 ----------
 
     private fun parseRepo(o: JSONObject): GitHubRepo {
