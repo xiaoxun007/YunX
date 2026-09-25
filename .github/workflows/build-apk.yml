@@ -28,19 +28,20 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
-      - name: Build debug APK
+      - name: Build release APK
         # 项目 settings.gradle.kts 按 YUNX_USE_MIRROR 切换仓库：CI 上阿里云镜像不可达，必须走官方源。
         # runner 镜像预装 Android SDK（licenses 已接受），AGP 会自动补装缺失的 SDK 组件。
+        # release 变体开启 R8 混淆 + 资源压缩，产物显著小于 debug。
         env:
           YUNX_USE_MIRROR: 'false'
         run: |
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: yunx-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: yunx-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
       # 构建产物自动发布到 GitHub Releases（与上游命名习惯一致：tag=v1.2.6-gh2，asset=YunX_release_1.2.6-gh2.apk）。
@@ -53,7 +54,7 @@ jobs:
           VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
           TAG="v${VERSION}"
           ASSET_NAME="YunX_release_${VERSION}.apk"
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APK="app/build/outputs/apk/release/app-release.apk"
           REPO_URL="https://github.com/$GITHUB_REPOSITORY"
           SHORT_SHA=$(git rev-parse --short HEAD)
 
