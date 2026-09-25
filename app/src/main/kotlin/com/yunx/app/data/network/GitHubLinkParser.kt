@@ -106,6 +106,9 @@ object GitHubLinkParser {
         // 2) 仓库链接
         repoRegex.find(url)?.let { m ->
             val owner = m.groupValues[1]
+            // owner 是 GitHub 功能页（features/topics/trending 等）时，github.com/{owner}/{repo}
+            // 实际是功能页带子路径，既非仓库也非用户/组织，直接丢弃，避免后续 getRepo 无谓报错。
+            if (owner.lowercase() in specialPaths) return null
             val repo = m.groupValues[2]
             val subPath = m.groupValues[3]
                 .substringBefore('?').substringBefore('#')

@@ -101,14 +101,20 @@ object GitHubMarkdownImageTransformer : ImageTransformer {
             null
         }
 
-    /** 降采样解码：先读边界尺寸，按目标宽（1080px）算 inSampleSize（2 的幂）。 */
+    /**
+     * 降采样解码：先读边界尺寸，再按「总像素上限」算 inSampleSize（2 的幂）。
+     * README 图片以手机屏阅读为主，约 200 万像素（1080×1920 级别）足够清晰；
+     * 对超高长图（如 2160×10000）按总像素缩放，避免一次性解码出超大 Bitmap 导致 OOM。
+     * 小图不放大：inSampleSize 最小为 1。
+     */
     private fun decodeSampled(bytes: ByteArray): android.graphics.Bitmap? = runCatching {
-        val targetWidth = 1080
+        val maxPixels = 1080 * 1920   // 约 200 万像素上限
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         var sample = 1
-        var w = bounds.outWidth
-        while (w / 2 >= targetWidth) { w /= 2; sample *= 2 }
+        while (bounds.outWidth / sample * (bounds.outHeight / sample) > maxPixels) {
+            sample *= 2
+        }
         val opts = BitmapFactory.Options().apply { inSampleSize = sample }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
     }.getOrNull()

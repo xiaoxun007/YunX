@@ -562,7 +562,10 @@ class ResolveViewModel(
         }
     }
 
-    /** 递归收集 GitHub 代码目录下所有 blob 的直链（逐层 getTree，不加 recursive=1） */
+    /**
+     * 递归收集 GitHub 代码目录下所有 blob 的直链（逐层 getTree，不加 recursive=1）。
+     * 用户在批量下载弹窗点取消后，正在进行的递归收集立即停止，已收集的 blob 不入队。
+     */
     private suspend fun collectGitHubBlobs(
         sha: String,
         prefix: String,
@@ -570,10 +573,13 @@ class ResolveViewModel(
         depth: Int
     ) {
         if (depth > 12) return
+        // 取消响应：每层入口与循环中检查，选超大文件夹时取消可立即生效
+        if (batchCancelRequested) return
         val repo = currentGitHubRepo ?: return
         val entries = githubApi?.getTree(repo.owner, repo.name, sha) ?: return
         val branch = repo.defaultBranch
         for (e in entries) {
+            if (batchCancelRequested) return
             val displayName = e.path.substringAfterLast('/')
             if (e.type == "tree") {
                 collectGitHubBlobs(e.sha, if (prefix.isBlank()) displayName else "$prefix/$displayName", result, depth + 1)
