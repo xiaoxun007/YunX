@@ -9,6 +9,7 @@ composeBom = "2025.10.01"
 room = "2.6.1"
 ksp = "2.1.0-1.0.29"
 material = "1.14.0"   # 官方 Material 主库，自带 com.google.android.material.color.utilities 包
+markdownRenderer = "0.39.1"   # mikepenz/multiplatform-markdown-renderer（GFM 渲染）
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -34,3 +35,5 @@ androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-man
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+# GFM Markdown 渲染（Material3 变体，不含图片加载器；图片相对链接在渲染前预处理为绝对 URL）
+markdownRenderer = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-m3", version.ref = "markdownRenderer" }

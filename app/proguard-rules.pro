@@ -32,6 +32,10 @@
     <fields>;
 }
 
+# multiplatform-markdown-renderer（mikepenz）：保留其内部模型/解析类，避免 R8 裁剪 GFM 节点
+-keep class com.mikepenz.** { *; }
+-dontwarn com.mikepenz.**
+
 # Uncomment this to preserve the line number information for
 # debugging stack traces.
 #-keepattributes SourceFile,LineNumberTable

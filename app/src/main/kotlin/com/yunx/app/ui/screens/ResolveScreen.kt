@@ -86,7 +86,7 @@ import com.yunx.app.data.network.GitHubLinkParser
 import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.ui.SnackbarController
-import com.yunx.app.ui.components.MarkdownRenderer
+import com.mikepenz.markdown.m3.MarkdownText
 import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.ShareDetailScreen
 import com.yunx.app.ui.viewmodel.BaiduCloudViewModel
@@ -272,17 +272,13 @@ fun ResolveScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Spacer(Modifier.height(4.dp))
-                                    // 自研轻量 Markdown 渲染：标题/粗体/代码块/列表/引用/链接/图片
-                                    val mirrorPrefix = remember {
-                                        com.yunx.app.data.prefs.SettingsRepository(context)
-                                            .githubMirrorPrefix?.ifBlank { null }
+                                    // 用成熟 GFM 库渲染 README（表格/任务列表/代码高亮/HTML 子集/emoji/自动链接）
+                                    // 预处理：相对链接与相对图片补全为绝对 URL（raw.githubusercontent.com）
+                                    val processed = remember(md, owner, repo, branch) {
+                                        preprocessReadme(md, owner, repo, branch)
                                     }
-                                    MarkdownRenderer(
-                                        text = md,
-                                        repoOwner = owner,
-                                        repoName = repo,
-                                        defaultBranch = branch,
-                                        mirrorPrefix = mirrorPrefix,
+                                    MarkdownText(
+                                        content = processed,
                                         modifier = Modifier.padding(bottom = 8.dp)
                                     )
                                 }
@@ -643,4 +639,38 @@ private fun GitHubBadge(label: String) {
             color = fg
         )
     }
+}
+
+/**
+ * README 预处理：把 Markdown 中的相对链接/相对图片补全为绝对 URL。
+ * - [text](./x) / [text](x) → https://github.com/{owner}/{repo}/blob/{branch}/x
+ * - ![alt](./img.png) / ![alt](img.png) → https://raw.githubusercontent.com/{owner}/{repo}/{branch}/img.png
+ * - http(s)/mailto 开头的绝对 URL 不动。
+ */
+private fun preprocessReadme(md: String, owner: String, repo: String, branch: String): String {
+    val blobBase = "https://github.com/$owner/$repo/blob/$branch/"
+    val rawBase = "https://raw.githubusercontent.com/$owner/$repo/$branch/"
+    // 图片 ![alt](url)
+    var out = Regex("!\\[([^]]*)\\]\\(([^)]+)\\)").replace(md) { m ->
+        val alt = m.groupValues[1]
+        val url = m.groupValues[2].trim()
+        val resolved = if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:")) {
+            url
+        } else {
+            rawBase + url.removePrefix("./").removePrefix("/")
+        }
+        "![$alt]($resolved)"
+    }
+    // 普通链接 [text](url)（排除已处理的图片）
+    out = Regex("(?<!!)\\[([^]]+)\\]\\(([^)]+)\\)").replace(out) { m ->
+        val label = m.groupValues[1]
+        val url = m.groupValues[2].trim()
+        val resolved = if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:")) {
+            url
+        } else {
+            blobBase + url.removePrefix("./").removePrefix("/")
+        }
+        "[$label]($resolved)"
+    }
+    return out
 }

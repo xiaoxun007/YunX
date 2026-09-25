@@ -98,6 +98,9 @@ dependencies {
     implementation(libs.room.ktx)          // 提供协程扩展，如 Flow、suspend
     ksp(libs.room.compiler)
 
+    // GFM Markdown 渲染（README 富文本）
+    implementation(libs.markdownRenderer)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
