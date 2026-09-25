@@ -38,7 +38,11 @@ data class GitHubRepo(
     /** 默认分支名（如 main / master） */
     val defaultBranch: String,
     /** 主语言（API language 字段，可能为 null） */
-    val language: String? = null
+    val language: String? = null,
+    /** 仓库元数据更新时间（API updated_at，ISO8601，可能为 null） */
+    val updatedAt: String? = null,
+    /** 最近一次 push 时间（API pushed_at，ISO8601；用于 ZIP 条目时间，可能为 null） */
+    val pushedAt: String? = null
 ) {
     /** 仓库属主（从 fullName = "owner/repo" 拆分） */
     val owner: String get() = fullName.substringBefore('/', name)
@@ -51,14 +55,16 @@ data class GitHubTreeEntry(
     val type: String,
     val sha: String,
     /** 文件大小（字节）；文件夹条目可能为 null */
-    val size: Long?
+    val size: Long?,
+    /** 该条目最后提交时间（tree 响应不含此字段，由 ViewModel 调 getLastCommitDate 填充；可能为 null） */
+    val updatedAt: String? = null
 )
 
 /** GitHub Release 版本 */
 data class GitHubRelease(
     val tagName: String,
     val name: String?,
-    /** 发布时间（ISO8601 字符串） */
+    /** 发布时间（API published_at，ISO8601 字符串） */
     val publishedAt: String?,
     val assets: List<GitHubAsset>,
     /** 是否预发布（prerelease=true） */
@@ -73,5 +79,7 @@ data class GitHubAsset(
     /** browser_download_url */
     val downloadUrl: String,
     val size: Long,
-    val contentType: String?
+    val contentType: String?,
+    /** 资产更新时间（API updated_at，ISO8601，可能为 null） */
+    val updatedAt: String? = null
 )

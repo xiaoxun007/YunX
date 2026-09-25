@@ -162,6 +162,25 @@ class GitHubApi(
             }.getOrNull()
         }
 
+    /**
+     * 获取某路径最后一次提交的时间（ISO8601，如 "2026-09-20T10:30:00Z"）。
+     * GET /repos/{owner}/{repo}/commits?path={path}&per_page=1，取 [0].commit.committer.date。
+     * 任何失败（404/401/403/超时/网络错误/空数组）一律返回 null，不抛异常。
+     */
+    suspend fun getLastCommitDate(owner: String, repo: String, path: String): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val url = "https://api.github.com/repos/$owner/$repo/commits?path=${java.net.URLEncoder.encode(path, "UTF-8")}&per_page=1"
+                val arr = requestJsonArray(url) ?: return@runCatching null
+                if (arr.length() == 0) return@runCatching null
+                arr.optJSONObject(0)
+                    ?.optJSONObject("commit")
+                    ?.optJSONObject("committer")
+                    ?.optString("date")
+                    ?.takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+
     // ---------- 内部解析 ----------
 
     private fun parseRepo(o: JSONObject): GitHubRepo {
@@ -173,7 +192,9 @@ class GitHubApi(
             fork = o.optBoolean("fork", false),
             parentFullName = parent?.optString("full_name")?.takeIf { it.isNotBlank() },
             defaultBranch = o.optString("default_branch").ifBlank { "main" },
-            language = o.optString("language").ifBlank { null }
+            language = o.optString("language").ifBlank { null },
+            updatedAt = o.optString("updated_at").ifBlank { null },
+            pushedAt = o.optString("pushed_at").ifBlank { null }
         )
     }
 
@@ -188,7 +209,8 @@ class GitHubApi(
                             name = a.optString("name"),
                             downloadUrl = a.optString("browser_download_url"),
                             size = a.optLong("size"),
-                            contentType = a.optString("content_type").ifBlank { null }
+                            contentType = a.optString("content_type").ifBlank { null },
+                            updatedAt = a.optString("updated_at").ifBlank { null }
                         )
                     )
                 }

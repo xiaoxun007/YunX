@@ -60,7 +60,10 @@ import com.yunx.app.data.repository.UCResolveRepository
 import com.yunx.app.data.repository.XunleiAccountRepository
 import com.yunx.app.data.repository.XunleiResolveRepository
 import com.yunx.app.ui.SnackbarController
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 sealed interface ResolveUiState {
@@ -621,6 +624,9 @@ class ResolveViewModel(
     var githubBadges: Map<String, String> by mutableStateOf(emptyMap())
         private set
 
+    /** 目录令牌：每次进入 GitHub 代码目录自增，用于丢弃异步时间请求的过期结果（防串目录） */
+    private var githubDirToken = 0
+
     /** 当前目录路径名栈（用于面包屑显示），如 [辅助工具, 专用模组] */
     var pathNames by mutableStateOf<List<String>>(emptyList())
         private set
@@ -799,7 +805,7 @@ class ResolveViewModel(
                 isdir = true,
                 pdirFid = "",
                 fidToken = "",
-                modifyTime = repo.defaultBranch
+                modifyTime = repo.pushedAt.orEmpty()
             ),
             ShareFile(
                 fid = "github:releases",
@@ -821,8 +827,10 @@ class ResolveViewModel(
             uiState = ResolveUiState.Error("加载目录失败")
             return
         }
+        // 目录令牌：每次加载自增；异步时间请求回来时比对，防止切换目录后旧结果串层
+        val dirToken = ++githubDirToken
         val files = mutableListOf<ShareFile>()
-        // 根代码目录（sha == 默认分支）首项：下载完整源码 ZIP
+        // 根代码目录（sha == 默认分支）首项：下载完整源码 ZIP（时间用 pushedAt，无需额外请求）
         if (sha == repo.defaultBranch) {
             files.add(
                 ShareFile(
@@ -832,7 +840,7 @@ class ResolveViewModel(
                     isdir = false,
                     pdirFid = "",
                     fidToken = "",
-                    modifyTime = "${repo.name}-${repo.defaultBranch}.zip"
+                    modifyTime = repo.pushedAt.orEmpty()
                 )
             )
         }
@@ -862,7 +870,37 @@ class ResolveViewModel(
                 )
             }
         }
+        // 先渲染列表（含大小），再并行补时间
         uiState = ResolveUiState.Detail(session!!, files)
+        // 并行请求每个条目最后提交时间（Semaphore 限流保护匿名 60/h）；失败静默留空
+        viewModelScope.launch {
+            val semaphore = Semaphore(8)
+            val timeMap = java.util.concurrent.ConcurrentHashMap<String, String>()
+            coroutineScope {
+                entries.forEach { e ->
+                    launch {
+                        semaphore.withPermit {
+                            runCatching {
+                                githubApi?.getLastCommitDate(repo.owner, repo.name, e.path)
+                            }.getOrNull()?.let { iso -> timeMap[e.path] = iso }
+                        }
+                    }
+                }
+            }
+            // 目录已切换则丢弃旧结果
+            if (dirToken != githubDirToken) return@launch
+            if (timeMap.isEmpty()) return@launch
+            val updated = files.map { f ->
+                val path = when {
+                    f.fid.startsWith("github:file:") -> f.fid.removePrefix("github:file:")
+                    // tree 条目：fid 是 github:code:{sha}，反查 path 用 entries 中 sha->path
+                    f.fid.startsWith("github:code:") -> entries.firstOrNull { it.sha == f.fid.removePrefix("github:code:") }?.path
+                    else -> null
+                }
+                if (path != null && timeMap[path] != null) f.copy(modifyTime = timeMap[path]!!) else f
+            }
+            uiState = ResolveUiState.Detail(session!!, updated)
+        }
     }
 
     /** Releases 列表：分页累加；首个非预发布非草稿标记为「最新」；满页加「加载更多」 */
@@ -934,7 +972,8 @@ class ResolveViewModel(
                 fsize = a.size,
                 isdir = false,
                 pdirFid = "",
-                fidToken = ""
+                fidToken = "",
+                modifyTime = a.updatedAt.orEmpty()
             )
         }
         uiState = ResolveUiState.Detail(session!!, files)
@@ -972,7 +1011,8 @@ class ResolveViewModel(
                 fsize = -1,
                 isdir = true,
                 pdirFid = "",
-                fidToken = ""
+                fidToken = "",
+                modifyTime = r.updatedAt.orEmpty()
             )
         }.toMutableList()
         if (repos != null && repos.size == 100) {
