@@ -88,7 +88,7 @@ import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.ui.SnackbarController
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.DefaultMarkdownTypography
-import com.mikepenz.markdown.model.TextLinkStyles
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
