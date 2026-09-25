@@ -32,6 +32,7 @@ import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.BaiduConstants
 import com.yunx.app.data.network.C139Constants
 import com.yunx.app.data.network.GitHubApi
+import com.yunx.app.data.network.GitHubLinkParser
 import com.yunx.app.data.network.GitHubLinkType
 import com.yunx.app.data.network.GitHubRepo
 import com.yunx.app.data.network.GitHubRelease
@@ -681,6 +682,14 @@ class ResolveViewModel(
     fun startResolve(link: String, pwd: String?) {
         currentLink = link
         currentPwd = pwd
+        // GitHub 链接统一识别：仓库 / 账号 / 文件直链 → GitHub 解析流程。
+        // 放在网盘解析之前，使「收藏打开 / 剪贴板 / 解析页 / 后续系统分享」等所有
+        // 走 startResolve 的入口都能解析 GitHub 链接，无需在 UI 层各处重复判断。
+        val github = GitHubLinkParser.parse(link)
+        if (github != null) {
+            startGitHubResolve(github)
+            return
+        }
         viewModelScope.launch {
             uiState = ResolveUiState.Loading
             val parsed = ShareLinkParser.parse(link)
