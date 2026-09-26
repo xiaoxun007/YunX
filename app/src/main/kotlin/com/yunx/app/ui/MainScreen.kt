@@ -182,8 +182,6 @@ fun MainScreen() {
     var showBookmarks by rememberSaveable { mutableStateOf(false) }
     // GitHub Token 管理弹窗
     var showGitHubTokenDialog by remember { mutableStateOf(false) }
-    // 是否配置了 Token：可变状态，保存/清除后即时刷新网盘页卡片登录态
-    var githubHasTokenState by rememberSaveable { mutableStateOf(GitHubTokenStore.hasToken(context)) }
     // 清除 Token 二次确认弹窗
     var showGitHubClearConfirm by remember { mutableStateOf(false) }
     // 用 rememberSaveable：屏幕旋转时保留已输入的 Token（避免误触旋转丢失输入）
@@ -191,6 +189,8 @@ fun MainScreen() {
     val saveableStateHolder = rememberSaveableStateHolder()
 
     val context = LocalContext.current
+    // 是否配置了 Token：可变状态，保存/清除后即时刷新网盘页卡片登录态（依赖 context，故放其后）
+    var githubHasTokenState by rememberSaveable { mutableStateOf(GitHubTokenStore.hasToken(context)) }
     val scope = rememberCoroutineScope()
     // 横屏时使用侧边导航栏（NavigationRail），竖屏保持底部导航栏（NavigationBar）
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
