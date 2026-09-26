@@ -118,4 +118,13 @@ object GitHubCommitDateCache {
         }
         cache[k] = CacheEntry(fetchedAt = now, date = date, success = success)
     }
+
+    /**
+     * 删除所有 key 以 [prefix] 开头的条目（下拉刷新绕缓存用）。
+     * key 形如 "owner/repo/path"，传 "owner/repo/" 即可清该仓库全部路径时间缓存，
+     * 让用户主动刷新时重新拉取最新提交时间。
+     */
+    fun invalidatePrefix(prefix: String) {
+        cache.keys.removeAll { it.startsWith(prefix) }
+    }
 }

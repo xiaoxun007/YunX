@@ -41,25 +41,27 @@ class GitHubApi(
     /** 每次请求动态获取全局客户端（忽略 SSL 开关切换即时生效） */
     private val client get() = clientProvider()
 
-    /** 获取单个仓库信息：GET /repos/{owner}/{repo} */
+    /** 获取单个仓库信息：GET /repos/{owner}/{repo}（结果经统一缓存） */
     suspend fun getRepo(owner: String, repo: String): GitHubRepo? = withContext(Dispatchers.IO) {
         runCatching {
-            val json = requestJson("https://api.github.com/repos/$owner/$repo")
+            val raw = cachedBody("repo:$owner/$repo", "https://api.github.com/repos/$owner/$repo")
                 ?: return@withContext null
-            parseRepo(json)
+            parseRepo(JSONObject(raw))
         }.getOrNull()
     }
 
     /**
      * 获取目录树（仅当前层，**不加 recursive=1**，由浏览层按需进入子目录）。
-     * GET /repos/{owner}/{repo}/git/trees/{sha}
+     * GET /repos/{owner}/{repo}/git/trees/{sha}（结果经统一缓存）。
      */
     suspend fun getTree(owner: String, repo: String, sha: String): List<GitHubTreeEntry>? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val json = requestJson("https://api.github.com/repos/$owner/$repo/git/trees/$sha")
-                    ?: return@withContext null
-                val arr = json.optJSONArray("tree") ?: return@withContext emptyList()
+                val raw = cachedBody(
+                    "tree:$owner/$repo/$sha",
+                    "https://api.github.com/repos/$owner/$repo/git/trees/$sha"
+                ) ?: return@withContext null
+                val arr = JSONObject(raw).optJSONArray("tree") ?: return@withContext emptyList()
                 buildList {
                     for (i in 0 until arr.length()) {
                         val o = arr.optJSONObject(i) ?: continue
@@ -76,13 +78,15 @@ class GitHubApi(
             }.getOrNull()
         }
 
-    /** Releases 列表（分页，per_page=100）：GET /repos/{owner}/{repo}/releases */
+    /** Releases 列表（分页，per_page=100）：GET /repos/{owner}/{repo}/releases（结果经统一缓存） */
     suspend fun getReleases(owner: String, repo: String, page: Int = 1): List<GitHubRelease>? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val arr = requestJsonArray(
+                val raw = cachedBody(
+                    "releases:$owner/$repo:$page",
                     "https://api.github.com/repos/$owner/$repo/releases?per_page=100&page=$page"
                 ) ?: return@withContext null
+                val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
                         val o = arr.optJSONObject(i) ?: continue
@@ -92,13 +96,15 @@ class GitHubApi(
             }.getOrNull()
         }
 
-    /** 用户公开仓库列表（分页）：GET /users/{owner}/repos?sort=updated */
+    /** 用户公开仓库列表（分页）：GET /users/{owner}/repos?sort=updated（带 Token 指纹 key，结果经缓存） */
     suspend fun getUserRepos(owner: String, page: Int = 1): List<GitHubRepo>? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val arr = requestJsonArray(
+                val raw = cachedBody(
+                    "userrepos:$owner:$page:${tokenFingerprint()}",
                     "https://api.github.com/users/$owner/repos?per_page=100&page=$page&sort=updated"
                 ) ?: return@withContext null
+                val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
                         val o = arr.optJSONObject(i) ?: continue
@@ -108,13 +114,15 @@ class GitHubApi(
             }.getOrNull()
         }
 
-    /** 组织公开仓库列表（分页）：GET /orgs/{owner}/repos?sort=updated */
+    /** 组织公开仓库列表（分页）：GET /orgs/{owner}/repos?sort=updated（带 Token 指纹 key，结果经缓存） */
     suspend fun getOrgRepos(owner: String, page: Int = 1): List<GitHubRepo>? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val arr = requestJsonArray(
+                val raw = cachedBody(
+                    "orgrepos:$owner:$page:${tokenFingerprint()}",
                     "https://api.github.com/orgs/$owner/repos?per_page=100&page=$page&sort=updated"
                 ) ?: return@withContext null
+                val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
                         val o = arr.optJSONObject(i) ?: continue
@@ -125,28 +133,28 @@ class GitHubApi(
         }
 
     /**
-     * 判断 owner 是用户还是组织：GET /users/{owner}，取返回对象的 type 字段。
+     * 判断 owner 是用户还是组织：GET /users/{owner}，取返回对象的 type 字段（结果经缓存）。
      * @return "User" / "Organization"；owner 不存在或网络失败返回 null（调用方按失败兜底）。
-     * 用一次请求直接选对端点，省去「先 users 失败再 orgs」的冗余失败请求。
      */
     suspend fun getUserType(owner: String): String? =
         withContext(Dispatchers.IO) {
             runCatching {
-                requestJson("https://api.github.com/users/$owner")?.optString("type")
-                    ?.takeIf { it.isNotBlank() }
+                val raw = cachedBody("usertype:$owner", "https://api.github.com/users/$owner")
+                    ?: return@withContext null
+                JSONObject(raw).optString("type").takeIf { it.isNotBlank() }
             }.getOrNull()
         }
 
     /**
-     * 获取当前 Token 对应用户的登录名：GET /user（需 Bearer token），取 login 字段。
+     * 获取当前 Token 对应用户的登录名：GET /user（需 Bearer token），取 login 字段（带 Token 指纹 key）。
      * 未配置 Token / 无效 Token / 网络失败返回 null。
-     * 用于网盘页 GitHub 卡片点击后进入「我的主页」（该账号仓库列表）。
      */
     suspend fun getUserLogin(): String? =
         withContext(Dispatchers.IO) {
             runCatching {
-                requestJson("https://api.github.com/user")?.optString("login")
-                    ?.takeIf { it.isNotBlank() }
+                val raw = cachedBody("userlogin:${tokenFingerprint()}", "https://api.github.com/user")
+                    ?: return@withContext null
+                JSONObject(raw).optString("login").takeIf { it.isNotBlank() }
             }.getOrNull()
         }
 
@@ -159,33 +167,36 @@ class GitHubApi(
      */
     suspend fun getReadme(owner: String, repo: String, defaultBranch: String): String? =
         withContext(Dispatchers.IO) {
-            runCatching {
-                // 1) API readme 接口（原始 Markdown）
-                val apiRequest = Request.Builder()
-                    .url("https://api.github.com/repos/$owner/$repo/readme")
-                    .header("User-Agent", "YunX")
-                    .header("Accept", "application/vnd.github.raw")
-                    .get()
-                    .also { b ->
-                        tokenProvider()?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
+            // README 原文缓存；>128KB 不写缓存（防超大 README 占内存，实际极少超）
+            GitHubResponseCache.getOrFetch("readme:$owner/$repo/$defaultBranch", maxBytes = 128 * 1024) {
+                runCatching {
+                    // 1) API readme 接口（原始 Markdown）
+                    val apiRequest = Request.Builder()
+                        .url("https://api.github.com/repos/$owner/$repo/readme")
+                        .header("User-Agent", "YunX")
+                        .header("Accept", "application/vnd.github.raw")
+                        .get()
+                        .also { b ->
+                            tokenProvider()?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
+                        }
+                        .build()
+                    client.newCall(apiRequest).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val body = resp.body?.string()
+                            if (!body.isNullOrBlank()) return@getOrFetch body
+                        }
+                        // 404 或空：继续兜底
                     }
-                    .build()
-                client.newCall(apiRequest).execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        val body = resp.body?.string()
-                        if (!body.isNullOrBlank()) return@runCatching body
+                    // 2) 兜底：raw README.md
+                    val rawRequest = buildRequest(
+                        "https://raw.githubusercontent.com/$owner/$repo/$defaultBranch/README.md"
+                    )
+                    client.newCall(rawRequest).execute().use { resp ->
+                        if (!resp.isSuccessful) return@use null
+                        resp.body?.string()?.takeIf { it.isNotBlank() }
                     }
-                    // 404 或空：继续兜底
-                }
-                // 2) 兜底：raw README.md
-                val rawRequest = buildRequest(
-                    "https://raw.githubusercontent.com/$owner/$repo/$defaultBranch/README.md"
-                )
-                client.newCall(rawRequest).execute().use { resp ->
-                    if (!resp.isSuccessful) return@runCatching null
-                    resp.body?.string()?.takeIf { it.isNotBlank() }
-                }
-            }.getOrNull()
+                }.getOrNull()
+            }
         }
 
     /**
@@ -253,6 +264,22 @@ class GitHubApi(
     }
 
     // ---------- 请求执行 ----------
+
+    /** Token 短指纹：带 Token 的请求 key 拼上，换/清 Token 后旧缓存不命中、不串号 */
+    private fun tokenFingerprint(): String =
+        tokenProvider()?.takeIf { it.isNotBlank() }?.hashCode()?.toString() ?: "anon"
+
+    /**
+     * 走统一缓存取 JSON 原始响应文本。非 2xx / 空 body 返回 null（失败也会被缓存短 TTL）。
+     * 调用方再自行用 JSONObject/JSONArray 解析。
+     */
+    private suspend fun cachedBody(key: String, url: String): String? =
+        GitHubResponseCache.getOrFetch(key) {
+            client.newCall(buildRequest(url)).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                resp.body?.string()
+            }
+        }
 
     /** 构建带鉴权头的 Request 并执行，返回 JSONObject；非 2xx / 空响应 / 解析失败返回 null */
     private fun requestJson(url: String): JSONObject? {

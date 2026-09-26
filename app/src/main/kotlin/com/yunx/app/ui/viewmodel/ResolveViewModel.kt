@@ -33,6 +33,7 @@ import com.yunx.app.data.network.BaiduConstants
 import com.yunx.app.data.network.C139Constants
 import com.yunx.app.data.network.GitHubApi
 import com.yunx.app.data.network.GitHubCommitDateCache
+import com.yunx.app.data.network.GitHubResponseCache
 import com.yunx.app.data.network.GitHubLinkParser
 import com.yunx.app.data.network.GitHubLinkType
 import com.yunx.app.data.network.GitHubRepo
@@ -655,18 +656,49 @@ class ResolveViewModel(
         private set
 
     /**
-     * 下拉刷新当前 GitHub 节点：按 currentDirFid 重新加载对应层。
-     * 代码目录→getTree(+README 仅根目录)、Releases→重新分页、账号→重新拉仓库列表；
-     * 失败保持现有数据不崩。非 GitHub 平台直接忽略。
+     * 下拉刷新当前 GitHub 节点：先按前缀清空统一缓存（用户主动刷新要看最新），
+     * 再走 loadGitHubDir 重新请求。代码目录→getTree(+README 仅根目录)、
+     * Releases→重新分页、账号→重新拉仓库列表；失败保持现有数据不崩。非 GitHub 平台忽略。
      */
     fun refreshGitHubCurrentNode() {
         if (!isGitHubPlatform || githubRefreshing) return
+        invalidateCurrentGitHubCache()
         viewModelScope.launch {
             githubRefreshing = true
             try {
                 loadGitHubDir(currentDirFid)
             } finally {
                 githubRefreshing = false
+            }
+        }
+    }
+
+    /** 按当前 GitHub 节点清空统一缓存前缀（下拉刷新绕缓存用） */
+    private fun invalidateCurrentGitHubCache() {
+        val repo = currentGitHubRepo
+        when {
+            // 仓库根 / 代码目录 / Releases：清该仓库 tree、releases、readme、repo 信息
+            currentDirFid.startsWith("github:root") ||
+                currentDirFid.startsWith("github:code") ||
+                currentDirFid.startsWith("github:release") ||
+                currentDirFid == "github:releases" -> {
+                if (repo != null) {
+                    // 注意：必须用 repo.name（GitHubRepo 是 data class，直接插值会得到 toString，前缀匹配不上缓存 key）
+                    GitHubResponseCache.invalidatePrefix("tree:${repo.owner}/${repo.name}/")
+                    GitHubResponseCache.invalidatePrefix("releases:${repo.owner}/${repo.name}:")
+                    GitHubResponseCache.invalidatePrefix("readme:${repo.owner}/${repo.name}/")
+                    GitHubResponseCache.invalidatePrefix("repo:${repo.owner}/${repo.name}")
+                    // 代码目录时间缓存一并失效：用户主动刷新期望看到最新提交时间
+                    GitHubCommitDateCache.invalidatePrefix("${repo.owner}/${repo.name}/")
+                }
+            }
+            // 账号仓库列表：清该 owner 的 users/orgs 列表与类型
+            currentDirFid == "github:account_root" -> {
+                currentGitHubOwner?.let { owner ->
+                    GitHubResponseCache.invalidatePrefix("userrepos:$owner:")
+                    GitHubResponseCache.invalidatePrefix("orgrepos:$owner:")
+                    GitHubResponseCache.invalidatePrefix("usertype:$owner")
+                }
             }
         }
     }
