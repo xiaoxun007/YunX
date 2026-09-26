@@ -332,7 +332,12 @@ fun ResolveScreen(
                                 GitHubBadge(label)
                             }
                         }
-                    } else null
+                    } else null,
+                    // 仅 GitHub 平台启用下拉刷新当前节点
+                    onRefresh = if (viewModel.isGitHubPlatform) {
+                        { viewModel.refreshGitHubCurrentNode() }
+                    } else null,
+                    refreshing = viewModel.githubRefreshing
                 )
                 is ResolveUiState.Loading -> LoadingContent()
                 else -> ResolveInputContent(

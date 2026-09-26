@@ -182,6 +182,10 @@ fun MainScreen() {
     var showBookmarks by rememberSaveable { mutableStateOf(false) }
     // GitHub Token 管理弹窗
     var showGitHubTokenDialog by remember { mutableStateOf(false) }
+    // 是否配置了 Token：可变状态，保存/清除后即时刷新网盘页卡片登录态
+    var githubHasTokenState by rememberSaveable { mutableStateOf(GitHubTokenStore.hasToken(context)) }
+    // 清除 Token 二次确认弹窗
+    var showGitHubClearConfirm by remember { mutableStateOf(false) }
     // 用 rememberSaveable：屏幕旋转时保留已输入的 Token（避免误触旋转丢失输入）
     var githubTokenInput by rememberSaveable { mutableStateOf("") }
     val saveableStateHolder = rememberSaveableStateHolder()
@@ -692,8 +696,20 @@ fun MainScreen() {
                         onC139Logout = { c139ViewModel.logout() },
                         onPan123Login = { showPan123Login = true },
                         onPan123Logout = { pan123ViewModel.logout() },
-                        githubHasToken = GitHubTokenStore.hasToken(context),
-                        onGitHubTokenClick = { showGitHubTokenDialog = true }
+                        githubHasToken = githubHasTokenState,
+                        onGitHubTokenClick = { showGitHubTokenDialog = true },
+                        // 已配置 Token 点卡片主体：用 GET /user 取 login，经统一解析入口进入该账号仓库列表
+                        onGitHubBrowseHome = {
+                            scope.launch {
+                                val login = githubApi.getUserLogin()
+                                if (!login.isNullOrBlank()) {
+                                    resolveViewModel.startResolve("https://github.com/$login", "")
+                                    currentTab = MainTab.Resolve
+                                }
+                            }
+                        },
+                        // 更多菜单「清除 Token」：先二次确认再清除
+                        onGitHubClearToken = { showGitHubClearConfirm = true }
                     )
                     MainTab.Download -> DownloadScreen(scrollBehavior, downloadViewModel)
                     MainTab.Settings -> SettingsScreen(
@@ -941,6 +957,7 @@ fun MainScreen() {
                 TextButton(onClick = {
                     GitHubTokenStore.setToken(context, githubTokenInput)
                     githubTokenInput = ""
+                    githubHasTokenState = GitHubTokenStore.hasToken(context)
                     showGitHubTokenDialog = false
                 }) { Text("保存") }
             },
@@ -949,11 +966,33 @@ fun MainScreen() {
                     TextButton(onClick = {
                         GitHubTokenStore.setToken(context, null)
                         githubTokenInput = ""
+                        githubHasTokenState = false
                         showGitHubTokenDialog = false
                     }) { Text("清除") }
                     Spacer(Modifier.width(8.dp))
                     TextButton(onClick = { showGitHubTokenDialog = false }) { Text("取消") }
                 }
+            }
+        )
+    }
+
+    // 清除 GitHub Token 二次确认（避免更多菜单误触直接清除）
+    if (showGitHubClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showGitHubClearConfirm = false },
+            title = { Text("清除 GitHub Token？") },
+            text = { Text("清除后 API 限额将回到 60 次/小时，需要时可重新配置。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    GitHubTokenStore.setToken(context, null)
+                    githubHasTokenState = false
+                    showGitHubClearConfirm = false
+                }) {
+                    Text("清除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGitHubClearConfirm = false }) { Text("取消") }
             }
         )
     }

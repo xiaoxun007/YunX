@@ -62,6 +62,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -156,6 +157,10 @@ fun ShareDetailScreen(
     extraFooterContent: @Composable (() -> Unit)? = null,
     /** 文件行徽章（文件名旁）：GitHub 用于 Releases 最新/预发布/草稿、账号 repo Fork/语言 */
     fileBadge: @Composable ((ShareFile) -> Unit)? = null,
+    /** 下拉刷新回调（仅 GitHub 平台传入）；null 时不启用下拉刷新，非 GitHub 平台行为不变 */
+    onRefresh: (() -> Unit)? = null,
+    /** 是否正在刷新（下拉刷新指示器状态） */
+    refreshing: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val pathNames = viewModel.pathNames
@@ -196,6 +201,8 @@ fun ShareDetailScreen(
         listState.scrollToItem(scrollPositions[currentDirKey] ?: 0)
     }
     // 多选模式：底部批量操作栏 + 处理中弹窗
+    // 内容抽成 lambda：仅 GitHub 平台包 PullToRefreshBox 下拉刷新，非 GitHub 路径原样渲染
+    val listContent: @Composable () -> Unit = {
     Box(modifier = modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
@@ -418,6 +425,20 @@ fun ShareDetailScreen(
                 }
             )
         }
+    }
+    }
+
+    // 仅传入 onRefresh（GitHub 平台）时启用下拉刷新；否则原样渲染内容
+    if (onRefresh != null) {
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            listContent()
+        }
+    } else {
+        listContent()
     }
 
     // 百度 >300MB 限速提示弹窗（解析页百度分享下载，可勾选不再显示）

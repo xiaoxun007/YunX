@@ -650,6 +650,27 @@ class ResolveViewModel(
     /** 当前是否为 GitHub 平台（UI 据此渲染 README/forked from/徽章等额外内容） */
     val isGitHubPlatform: Boolean get() = currentPlatform == SharePlatform.GITHUB
 
+    /** GitHub 下拉刷新指示器状态 */
+    var githubRefreshing by mutableStateOf(false)
+        private set
+
+    /**
+     * 下拉刷新当前 GitHub 节点：按 currentDirFid 重新加载对应层。
+     * 代码目录→getTree(+README 仅根目录)、Releases→重新分页、账号→重新拉仓库列表；
+     * 失败保持现有数据不崩。非 GitHub 平台直接忽略。
+     */
+    fun refreshGitHubCurrentNode() {
+        if (!isGitHubPlatform || githubRefreshing) return
+        viewModelScope.launch {
+            githubRefreshing = true
+            try {
+                loadGitHubDir(currentDirFid)
+            } finally {
+                githubRefreshing = false
+            }
+        }
+    }
+
     /** README 渲染用：当前仓库 owner（账号/组织浏览或无仓库时为 null） */
     val githubRepoOwner: String? get() = currentGitHubRepo?.owner
     /** README 渲染用：当前仓库名 */

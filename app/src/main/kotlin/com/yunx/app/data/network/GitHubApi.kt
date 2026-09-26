@@ -138,6 +138,19 @@ class GitHubApi(
         }
 
     /**
+     * 获取当前 Token 对应用户的登录名：GET /user（需 Bearer token），取 login 字段。
+     * 未配置 Token / 无效 Token / 网络失败返回 null。
+     * 用于网盘页 GitHub 卡片点击后进入「我的主页」（该账号仓库列表）。
+     */
+    suspend fun getUserLogin(): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                requestJson("https://api.github.com/user")?.optString("login")
+                    ?.takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+
+    /**
      * 获取仓库 README 原文（Markdown）。
      * - 优先 GET /repos/{owner}/{repo}/readme，Accept: application/vnd.github.raw（返回纯文本，自动识别 README.md/readme.rst 等）；
      * - 404 视为无 README，返回 null；
