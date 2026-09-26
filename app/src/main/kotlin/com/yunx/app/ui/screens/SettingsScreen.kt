@@ -261,7 +261,7 @@ fun SettingsScreen(
                     } else {
                         // 明文备份：直接导入
                         val count = runCatching {
-                            withContext(Dispatchers.IO) { backupManager.importJson(text) }
+                            withContext(Dispatchers.IO) { backupManager.importJson(text, context) }
                         }.getOrElse { e ->
                             SnackbarController.show("导入失败：${e.message}")
                             return@launch
@@ -753,7 +753,7 @@ fun SettingsScreen(
                 scope.launch {
                     try {
                         val content = runCatching {
-                            withContext(Dispatchers.IO) { backupManager.export(password, onlyLoggedIn) }
+                            withContext(Dispatchers.IO) { backupManager.export(password, onlyLoggedIn, context) }
                         }.getOrNull()
                         if (content == null) {
                             SnackbarController.show("导出失败")
@@ -794,7 +794,7 @@ fun SettingsScreen(
                     scope.launch {
                         try {
                             val count = try {
-                                withContext(Dispatchers.IO) { backupManager.import(content, password) }
+                                withContext(Dispatchers.IO) { backupManager.import(content, password, context) }
                             } catch (e: javax.crypto.AEADBadTagException) {
                                 SnackbarController.show("密码错误，解密失败")
                                 return@launch
