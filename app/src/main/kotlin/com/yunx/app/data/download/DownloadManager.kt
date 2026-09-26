@@ -299,10 +299,11 @@ class DownloadManager(
         size: Long = -1L,
         /** 下载来源平台标识（按平台应用下载线程数设置）；通用/手动添加传空串 */
         platform: String = "",
-        /** 下载成功完成后的清理回调（如删除网盘临时转存文件）；失败/取消不触发 */
-        onComplete: suspend () -> Unit = {},
         /** 镜像主 URL 不可达时的回退直连（默认空=不回退）；仅 GitHub 等镜像下载传入 */
-        fallbackUrl: String = ""
+        fallbackUrl: String = "",
+        /** 下载成功完成后的清理回调（如删除网盘临时转存文件）；失败/取消不触发。
+         * 注意：必须是最后一个参数（调用点有大量尾随 lambda 用法，放它之后会编译失败）。 */
+        onComplete: suspend () -> Unit = {}
     ): Long {
         // 文件名兜底：空白时从 URL 推导，避免保存时变成时间戳
         val safeName = fileName.ifBlank {
