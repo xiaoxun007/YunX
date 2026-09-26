@@ -149,7 +149,8 @@ class AuthBackupManager(
         // GitHub Token 单独顶层字段（它是单个标量凭证，存 Keystore 而非 Room，与网盘账号结构不同）。
         // 仅在已配置 Token 时导出；明文 token 仅存在于导出 JSON 内，最终由 AuthCrypto 口令加密保护，
         // 不落盘到其他位置、不打印日志。
-        runCatching { GitHubTokenStore.getToken(context) }
+        // 注意：runCatching 返回 Result，必须先 getOrNull() 解包出 String? 才能 ?.takeIf（否则 it 是 Result 类型编译失败）
+        runCatching { GitHubTokenStore.getToken(context) }.getOrNull()
             ?.takeIf { !it.isNullOrBlank() && (!onlyLoggedIn || GitHubTokenStore.hasToken(context)) }
             ?.let { root.put("githubToken", it) }
         root.toString(2)
