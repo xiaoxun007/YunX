@@ -3,6 +3,16 @@ name: Build & Release APK
 on:
   push:
     branches: [master, main]
+    # paths 过滤：仅当构建相关文件变化时才触发，避免改 README 等空跑 CI
+    paths:
+      - '.github/workflows/build-apk.yml'
+      - 'app/**'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradlew'
+      - 'gradlew.bat'
   workflow_dispatch:
 
 # 发布 GitHub Release 需要写权限（默认 token 为只读时会 403）
@@ -24,6 +34,16 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Cache Gradle and dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew

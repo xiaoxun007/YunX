@@ -544,7 +544,9 @@ class ResolveViewModel(
                             url = UpdateChecker.mirrorUrl(t.first, prefix),
                             fileName = t.second,
                             size = t.third,
-                            platform = DownloadPlatform.GITHUB
+                            platform = DownloadPlatform.GITHUB,
+                            // 镜像挂掉时回退原始直连（t.first 为未镜像的 GitHub 直链）
+                            fallbackUrl = t.first
                         )
                         okCount++
                     }
@@ -613,6 +615,9 @@ class ResolveViewModel(
 
     /** 当前浏览的 GitHub 账号/组织（账号仓库列表时非空） */
     private var currentGitHubOwner: String? = null
+
+    /** 当前 owner 的类型（"User"/"Organization"），首次加载后缓存，避免分页每页都探测 */
+    private var currentGitHubOwnerType: String? = null
 
     /** 已累加的 Releases 列表（分页累加） */
     private val currentGitHubReleases = mutableListOf<GitHubRelease>()
@@ -1005,15 +1010,26 @@ class ResolveViewModel(
         uiState = ResolveUiState.Detail(session!!, files)
     }
 
-    /** 账号/组织仓库列表：users 失败回退 orgs；分页累加；满页加「加载更多」 */
+    /** 账号/组织仓库列表：先用 /users/{owner} 的 type 字段一次选对端点，避免「users 失败再 orgs」冗余请求；分页累加；满页加「加载更多」 */
     private suspend fun loadGitHubAccountRepos(firstPage: Boolean, page: Int = 1) {
         val owner = currentGitHubOwner ?: return
         if (firstPage) {
             currentGitHubRepos.clear()
+            currentGitHubOwnerType = null
         }
-        // users 失败回退 orgs（账号 vs 组织自动识别）
-        var repos = githubApi?.getUserRepos(owner, page = page)
-        if (repos == null) repos = githubApi?.getOrgRepos(owner, page = page)
+        // 首次加载先探测 owner 类型并缓存；type=Organization 走 orgs 端点，其余走 users
+        if (currentGitHubOwnerType == null) {
+            currentGitHubOwnerType = githubApi?.getUserType(owner)
+        }
+        var repos = if (currentGitHubOwnerType == "Organization") {
+            githubApi?.getOrgRepos(owner, page = page)
+        } else {
+            // User 或类型探测失败：先走 users；仍失败兜底 orgs（保持对异常情况的兼容）
+            githubApi?.getUserRepos(owner, page = page)
+        }
+        if (repos == null && currentGitHubOwnerType != "Organization") {
+            repos = githubApi?.getOrgRepos(owner, page = page)
+        }
         if (repos == null && page == 1) {
             uiState = ResolveUiState.Error("无法获取 $owner 的仓库列表")
             return
@@ -1416,7 +1432,9 @@ class ResolveViewModel(
                     url = UpdateChecker.mirrorUrl(link.downloadUrl, prefix),
                     fileName = link.filename,
                     size = link.size,
-                    platform = DownloadPlatform.GITHUB
+                    platform = DownloadPlatform.GITHUB,
+                    // 镜像挂掉时回退原始直连（link.downloadUrl 为未镜像的 GitHub 直链）
+                    fallbackUrl = link.downloadUrl
                 )
                 downloadStarted = true
                 return@launch

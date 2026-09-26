@@ -125,6 +125,19 @@ class GitHubApi(
         }
 
     /**
+     * 判断 owner 是用户还是组织：GET /users/{owner}，取返回对象的 type 字段。
+     * @return "User" / "Organization"；owner 不存在或网络失败返回 null（调用方按失败兜底）。
+     * 用一次请求直接选对端点，省去「先 users 失败再 orgs」的冗余失败请求。
+     */
+    suspend fun getUserType(owner: String): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                requestJson("https://api.github.com/users/$owner")?.optString("type")
+                    ?.takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+
+    /**
      * 获取仓库 README 原文（Markdown）。
      * - 优先 GET /repos/{owner}/{repo}/readme，Accept: application/vnd.github.raw（返回纯文本，自动识别 README.md/readme.rst 等）；
      * - 404 视为无 README，返回 null；
