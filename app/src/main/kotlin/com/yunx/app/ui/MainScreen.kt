@@ -20,11 +20,11 @@ package com.yunx.app.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -32,33 +32,35 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ShortNavigationBar
+import androidx.compose.material3.ShortNavigationBarDefaults
+import androidx.compose.material3.ShortNavigationBarItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -73,7 +75,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import android.content.res.Configuration
@@ -132,7 +136,7 @@ import com.yunx.app.ui.screens.ResolveScreen
 import com.yunx.app.ui.screens.SettingsScreen
 import com.yunx.app.ui.screens.SupportScreen
 import com.yunx.app.ui.screens.ThemeScreen
-import com.yunx.app.ui.screens.UpdateDialog
+import com.yunx.app.ui.screens.UpdateSheet
 import com.yunx.app.ui.viewmodel.BaiduAccountViewModel
 import com.yunx.app.ui.viewmodel.BaiduCloudViewModel
 import com.yunx.app.ui.viewmodel.BookmarkViewModel
@@ -155,15 +159,32 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.yunx.app.data.network.HttpClients
+import com.yunx.app.ui.theme.effectsDefault
+import com.yunx.app.ui.theme.effectsFast
+
+/**
+ * 容器变换的共享 key：源（设置页那一行）与目标（叠加页）必须用同一个 key，形变才会发生。
+ * 两处都在本文件里构造（源侧修饰符见 MainScreen 里 themeRowModifier 等，目标侧见 OverlayPage 的调用处）。
+ */
+internal const val OVERLAY_KEY_ABOUT = "overlay-about"
+internal const val OVERLAY_KEY_SUPPORT = "overlay-support"
+internal const val OVERLAY_KEY_THEME = "overlay-theme"
+
+/** 收藏页从顶栏图标进入，没有"被点的那一项"，不做共享元素形变（普通淡入即可） */
+internal const val OVERLAY_KEY_BOOKMARKS = "overlay-bookmarks"
 
 /**
  * 主页框架：
- * - 顶部可折叠大标题（LargeTopAppBar），切换 Tab 时标题文字随 Tab 变化，折叠状态不受影响；
- * - 导航 Tab（解析 / 网盘 / 下载 / 设置）：竖屏为底部导航栏（NavigationBar），横屏切换为侧边导航栏（NavigationRail）；
+ * - 顶部可折叠标题（MediumFlexibleTopAppBar，Expressive 柔性顶栏），切换 Tab 时标题文字随 Tab 变化，折叠状态不受影响；
+ * - 导航 Tab（解析 / 网盘 / 下载 / 设置）：竖屏为底部导航条（ShortNavigationBar），横屏切换为侧边导航栏（NavigationRail）；
  * - 通过 SaveableStateHolder 保存各页面状态，切换 Tab 再切回来不会重置；
  * - 夸克登录页全屏覆盖展示。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(
+    ExperimentalMaterial3Api::class,
+    ExperimentalMaterial3ExpressiveApi::class,
+    ExperimentalSharedTransitionApi::class
+)
 @Composable
 fun MainScreen() {
     var currentTab by rememberSaveable { mutableStateOf(MainTab.Resolve) }
@@ -180,19 +201,11 @@ fun MainScreen() {
     var showSupport by rememberSaveable { mutableStateOf(false) }
     var showTheme by rememberSaveable { mutableStateOf(false) }
     var showBookmarks by rememberSaveable { mutableStateOf(false) }
-    // GitHub Token 管理弹窗
-    var showGitHubTokenDialog by remember { mutableStateOf(false) }
-    // 清除 Token 二次确认弹窗
-    var showGitHubClearConfirm by remember { mutableStateOf(false) }
-    // 用 rememberSaveable：屏幕旋转时保留已输入的 Token（避免误触旋转丢失输入）
-    var githubTokenInput by rememberSaveable { mutableStateOf("") }
     val saveableStateHolder = rememberSaveableStateHolder()
 
     val context = LocalContext.current
-    // 是否配置了 Token：可变状态，保存/清除后即时刷新网盘页卡片登录态（依赖 context，故放其后）
-    var githubHasTokenState by rememberSaveable { mutableStateOf(GitHubTokenStore.hasToken(context)) }
     val scope = rememberCoroutineScope()
-    // 横屏时使用侧边导航栏（NavigationRail），竖屏保持底部导航栏（NavigationBar）
+    // 横屏时使用侧边导航栏（NavigationRail），竖屏保持底部导航条（ShortNavigationBar）
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // 首次启动引导页（context 声明后检测）
     var showOnboarding by remember { mutableStateOf(false) }
@@ -201,19 +214,59 @@ fun MainScreen() {
         showOnboarding = !prefs.getBoolean("onboarding_shown", false)
     }
 
-    // 更新检测：请求 GitHub 最新 Release（仓库无 Release / 网络失败则不提示）
-    var showUpdateDialog by remember { mutableStateOf(false) }
-    var pendingRelease by remember { mutableStateOf<UpdateChecker.Release?>(null) }
+    // 更新检测：请求 GitHub 最新 Release（仓库无 Release / 网络失败则不提示，失败原因看 YunX-Update 日志）
+    var showUpdateSheet by remember { mutableStateOf(false) }
+    // 最近一次成功拿到的真实 Release：既用于「发现新版本」弹窗，也供设置页的开发调试入口直接预览
+    var latestRelease by remember { mutableStateOf<UpdateChecker.Release?>(null) }
     LaunchedEffect(Unit) {
-        val release = UpdateChecker.fetchLatestRelease() ?: return@LaunchedEffect
-        val current = UpdateChecker.currentVersion(context)
-        val prefs = context.getSharedPreferences("yunx_prefs", android.content.Context.MODE_PRIVATE)
-        val ignored = prefs.getString("ignored_version", "")
-        if (UpdateChecker.compareVersions(release.tagName, current) > 0 &&
-            release.tagName != ignored
-        ) {
-            pendingRelease = release
-            showUpdateDialog = true
+        when (val result = UpdateChecker.fetchLatestRelease()) {
+            is UpdateChecker.CheckResult.Failure -> Unit // 启动检查不打扰用户，失败原因已由 UpdateChecker 打 E 级日志
+            is UpdateChecker.CheckResult.Success -> {
+                val release = result.release
+                latestRelease = release
+                val current = UpdateChecker.currentVersion(context)
+                val prefs = context.getSharedPreferences("yunx_prefs", android.content.Context.MODE_PRIVATE)
+                val ignored = prefs.getString("ignored_version", "")
+                if (UpdateChecker.compareVersions(release.tagName, current) > 0 &&
+                    release.tagName != ignored
+                ) {
+                    showUpdateSheet = true
+                }
+            }
+        }
+    }
+
+    /**
+     * 手动检查更新：与启动检查共用同一份状态和同一个 [UpdateSheet]（设置页不再自己实现一份弹窗）。
+     * 失败时把 [UpdateChecker.CheckResult.Failure.reason] 直接显示出来，方便区分断网 / 限流 / 仓库无 Release。
+     */
+    val checkForUpdate: () -> Unit = {
+        scope.launch {
+            SnackbarController.show("正在检查更新…")
+            when (val result = UpdateChecker.fetchLatestRelease()) {
+                is UpdateChecker.CheckResult.Failure -> SnackbarController.show("检查更新失败：${result.reason}")
+                is UpdateChecker.CheckResult.Success -> {
+                    val release = result.release
+                    latestRelease = release
+                    if (UpdateChecker.compareVersions(release.tagName, UpdateChecker.currentVersion(context)) > 0) {
+                        showUpdateSheet = true
+                    } else {
+                        SnackbarController.show("已是最新版本")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 开发调试入口「显示检查更新弹窗」：只用已经拿到的真实 Release 打开弹窗，
+     * 不发网络请求、也不比较版本号（想预览就先在设置页联网检查一次更新）。
+     */
+    val previewUpdateSheet: () -> Unit = {
+        if (latestRelease != null) {
+            showUpdateSheet = true
+        } else {
+            SnackbarController.show("暂未获取到 Release 数据，请先联网检查一次更新")
         }
     }
     val api = remember { QuarkApi() }
@@ -222,8 +275,6 @@ fun MainScreen() {
     val baiduApi = remember { BaiduApi() }
     val c139Api = remember { C139Api() }
     val pan123Api = remember { Pan123Api() }
-    // GitHub API：Token 从加密存储惰性读取（每次请求实时读取，保存后即时生效）
-    val githubApi = remember { GitHubApi(tokenProvider = { GitHubTokenStore.getToken(context) }) }
     val db = remember { AppDatabase.get(context) }
     val settings = remember { SettingsRepository(context) }
     val repository = remember {
@@ -255,6 +306,15 @@ fun MainScreen() {
             db.pan123AccountDao()
         )
     }
+    // GitHub API 封装：Token 从 GitHubTokenStore 动态读取（Keystore 加密），提升 API 限额
+    val githubApi = remember {
+        GitHubApi(tokenProvider = { GitHubTokenStore.getToken(context) })
+    }
+    // 网盘页 GitHub 卡片登录态：保存/清除 Token 后即时刷新卡片主按钮文案
+    var githubHasTokenState by remember { mutableStateOf(GitHubTokenStore.hasToken(context)) }
+    // GitHub Token 配置弹窗 / 清除二次确认
+    var showGitHubTokenDialog by remember { mutableStateOf(false) }
+    var showGitHubClearConfirm by remember { mutableStateOf(false) }
     // 下载管理器：OkHttp 分片下载器 + Room 任务持久化 + 可配置线程数（设置页动态生效）
     // 下载客户端由全局 HttpClients 统一管理（大 Dispatcher 保障分片并发，不锁死 CDN host；
     // 并支持隐藏菜单「忽略 SSL 证书」开关，抓包调试时即时生效，无需重启）
@@ -298,7 +358,6 @@ fun MainScreen() {
             deferred.await()
         }
     }
-
     val viewModel: QuarkAccountViewModel = viewModel(
         factory = QuarkAccountViewModel.Factory(repository)
     )
@@ -449,8 +508,7 @@ fun MainScreen() {
             pan123ResolveRepository,
             downloadManager,
             db.bookmarkDao(),
-            githubApi,
-            { settings.githubMirrorPrefix?.ifBlank { null } ?: UpdateChecker.MIRROR_PREFIX }
+            githubApi
         )
     )
     val downloadViewModel: DownloadViewModel = viewModel(
@@ -603,251 +661,308 @@ fun MainScreen() {
         return
     }
 
+    // 当前叠加页路由（null = 主界面）：容器变换用它当"源/目标"的共享 key
+    val overlayRoute = when {
+        showAbout -> OVERLAY_KEY_ABOUT
+        showSupport -> OVERLAY_KEY_SUPPORT
+        showTheme -> OVERLAY_KEY_THEME
+        showBookmarks -> OVERLAY_KEY_BOOKMARKS
+        else -> null
+    }
+    // 正在展示的叠加页路由：打开时更新，关闭时**保留**（退出动画要用它渲染那个页面）
+    var shownRoute by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(overlayRoute) {
+        if (overlayRoute != null) shownRoute = overlayRoute
+    }
+
     // 折叠标题状态提升到本层：跨页面共享，页面切换时折叠/展开状态保持不变
     // 用 exitUntilCollapsed（默认实现，含松手吸附）：滚动时标题先收起再滚内容；
     // 向上滚动回顶部过程中标题保持收起，只有列表到达最顶部后继续下拉（overscroll）才重新展开
     val topAppBarState = rememberTopAppBarState()
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(topAppBarState)
+    // ★ flingAnimationSpec = null 是「切页后首次快速滑动，列表恰好卡在标题收起完毕处」的修复：
+    //   material3 AppBar.kt 的 ExitUntilCollapsedScrollBehavior.onPostFling → settleAppBar 里，
+    //   惯性开始时若顶栏尚未完全收起，顶栏会先用 flingAnimationSpec 做衰减动画、把惯性速度消耗在自己收起上，
+    //   只把「剩余速度」还给列表；一次快速滑动的速度往往不够既收起标题又带动列表，于是列表停住不动。
+    //   传 null 后：顶栏仍随滚动增量收起/展开、松手时吸附到位，但不再吞掉列表的惯性速度。
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(
+        topAppBarState,
+        flingAnimationSpec = null
+    )
 
     // 全局 Snackbar 宿主（Material3，替换原 Toast 提示）
     val snackbarHostState = rememberGlobalSnackbarHostState()
 
-    // 主框架与全屏覆盖层（关于页）放在同一 Box：覆盖层带过渡动画
-    Box(modifier = Modifier.fillMaxSize()) {
-    // 顶部可折叠大标题（竖屏 / 横屏共用）
-    val topBarContent: @Composable () -> Unit = {
-        LargeTopAppBar(
-            title = {
-                Text(
-                    text = currentTab.title,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-            },
-            actions = {
-                // 解析页标题右上角：收藏网盘链接入口
-                if (currentTab == MainTab.Resolve) {
-                    IconButton(onClick = { showBookmarks = true }) {
-                        Icon(Icons.Outlined.Bookmarks, contentDescription = "收藏网盘链接")
-                    }
-                }
-            },
-            scrollBehavior = scrollBehavior,
-            colors = TopAppBarDefaults.largeTopAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surface,
-                scrolledContainerColor = MaterialTheme.colorScheme.surface
-            )
-        )
-    }
-    // Tab 内容区（竖屏 / 横屏共用）：每个页面独立保存状态，切换 Tab 再切回来不丢失；带 Material3 过渡动画（按 Tab 顺序决定方向）
-    val tabContent: @Composable () -> Unit = {
-        AnimatedContent(
-            targetState = currentTab,
-            transitionSpec = {
-                // 根据 Tab 顺序决定滑动方向：向右切（新Tab在右边）→ 新页从右滑入；向左切反向
-                val forward = targetState.ordinal > initialState.ordinal
-                if (forward) {
-                    (fadeIn(tween(220)) + slideInHorizontally(tween(220)) { it / 4 })
-                        .togetherWith(fadeOut(tween(160)) + slideOutHorizontally(tween(160)) { -it / 4 })
-                } else {
-                    (fadeIn(tween(220)) + slideInHorizontally(tween(220)) { -it / 4 })
-                        .togetherWith(fadeOut(tween(160)) + slideOutHorizontally(tween(160)) { it / 4 })
-                }
-            },
-            label = "mainTab"
-        ) { tab ->
-            saveableStateHolder.SaveableStateProvider(tab) {
-                when (tab) {
-                    MainTab.Resolve -> ResolveScreen(
-                        scrollBehavior,
-                        resolveViewModel,
-                        quarkCloudViewModel,
-                        xunleiCloudViewModel,
-                        baiduCloudViewModel,
-                        c139CloudViewModel,
-                        ucCloudViewModel,
-                        pan123CloudViewModel
-                    )
-                    MainTab.Drive -> DriveScreen(
-                        scrollBehavior = scrollBehavior,
-                        quarkAccount = quarkAccount,
-                        ucAccount = ucAccount,
-                        xunleiAccount = xunleiAccount,
-                        baiduAccount = baiduAccount,
-                        c139Account = c139Account,
-                        pan123Account = pan123Account,
-                        quarkCloudViewModel = quarkCloudViewModel,
-                        ucCloudViewModel = ucCloudViewModel,
-                        xunleiCloudViewModel = xunleiCloudViewModel,
-                        baiduCloudViewModel = baiduCloudViewModel,
-                        c139CloudViewModel = c139CloudViewModel,
-                        pan123CloudViewModel = pan123CloudViewModel,
-                        driveQuotaViewModel = driveQuotaViewModel,
-                        onQuarkLogin = { showQuarkLogin = true },
-                        onQuarkLogout = { viewModel.logout() },
-                        onDownloadStarted = { currentTab = MainTab.Download },
-                        onUCLogin = { showUCLogin = true },
-                        onUCLogout = { ucViewModel.logout() },
-                        onXunleiLogin = { showXunleiLogin = true },
-                        onXunleiLogout = { xunleiViewModel.logout() },
-                        onBaiduLogin = { showBaiduLogin = true },
-                        onBaiduLogout = { baiduViewModel.logout() },
-                        onC139Login = { showC139Login = true },
-                        onC139Logout = { c139ViewModel.logout() },
-                        onPan123Login = { showPan123Login = true },
-                        onPan123Logout = { pan123ViewModel.logout() },
-                        githubHasToken = githubHasTokenState,
-                        onGitHubTokenClick = { showGitHubTokenDialog = true },
-                        // 已配置 Token 点卡片主体：用 GET /user 取 login，经统一解析入口进入该账号仓库列表
-                        onGitHubBrowseHome = {
-                            scope.launch {
-                                val login = githubApi.getUserLogin()
-                                if (!login.isNullOrBlank()) {
-                                    resolveViewModel.startResolve("https://github.com/$login", "")
-                                    currentTab = MainTab.Resolve
-                                }
-                            }
-                        },
-                        // 更多菜单「清除 Token」：先二次确认再清除
-                        onGitHubClearToken = { showGitHubClearConfirm = true }
-                    )
-                    MainTab.Download -> DownloadScreen(scrollBehavior, downloadViewModel)
-                    MainTab.Settings -> SettingsScreen(
-                        scrollBehavior = scrollBehavior,
-                        onThemeClick = { showTheme = true },
-                        onAboutClick = { showAbout = true },
-                        onSupportClick = { showSupport = true },
-                        backupManager = backupManager,
-                        onDownloadUpdateApk = { url, name ->
-                            scope.launch {
-                                downloadManager.enqueue(url = url, fileName = name)
-                                currentTab = MainTab.Download
-                            }
-                        }
-                    )
-                }
-            }
-        }
-    }
-
-    if (isLandscape) {
-        // 横屏：左侧侧边导航栏（NavigationRail）+ 右侧顶栏 & 内容
+    // ★ 容器变换（Container Transform）：源 = 主界面（设置页里被点的那一行），目标 = 叠加页。
+    //   两者在同一个 SharedTransitionLayout 里、用同一个 key 的 sharedBounds 做形变：
+    //   被点的卡片自己长成整页，行内内容淡出、页面内容在容器内淡入。
+    //   ★ 主界面这个"源"用 AnimatedVisibility 承载：叠加页打开时它会被真正移出组合，
+    //     而不是像以前那样常驻叠在下面 —— 那正是"卡片底色整片画不出来"的根因（见 OverlayPage 注释）。
+    SharedTransitionLayout(modifier = Modifier.fillMaxSize()) {
+        // 底色放最外面：过渡期间主界面淡出、叠加页容器还在长大时，露出来的是页面底色而不是系统窗口的白色
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                // 竖屏由 Scaffold 提供主题背景；横屏手动布局需显式设置，否则露出窗口默认白色
-                .background(MaterialTheme.colorScheme.background)
+                .background(MaterialTheme.colorScheme.surface)
         ) {
-            Row(modifier = Modifier.fillMaxSize()) {
-                MainNavigationRail(
-                    currentTab = currentTab,
-                    onTabSelected = { currentTab = it }
+            AnimatedVisibility(
+                visible = overlayRoute == null,
+                enter = fadeIn(effectsDefault()),
+                exit = fadeOut(effectsFast())
+            ) {
+                // 源侧共享元素修饰符：设置页那三行各自对应一个 key（见 SettingsScreen）。
+                // ★ rememberSharedContentState 是 @Composable，必须在 composable 作用域里直接调用，
+                //   不能包在普通 lambda 里延迟构造 —— 所以这里一次性建好三个传下去。
+                val sourceScope = this
+                val themeRowModifier = Modifier.sharedBounds(
+                    rememberSharedContentState(OVERLAY_KEY_THEME),
+                    animatedVisibilityScope = sourceScope
                 )
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxSize()
-                ) {
-                    topBarContent()
+                val aboutRowModifier = Modifier.sharedBounds(
+                    rememberSharedContentState(OVERLAY_KEY_ABOUT),
+                    animatedVisibilityScope = sourceScope
+                )
+                val supportRowModifier = Modifier.sharedBounds(
+                    rememberSharedContentState(OVERLAY_KEY_SUPPORT),
+                    animatedVisibilityScope = sourceScope
+                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                // 顶部可折叠标题（竖屏 / 横屏共用）：Expressive 的「中号柔性顶栏」
+                val topBarContent: @Composable () -> Unit = {
+                    // ★ 标题不要写死 style/fontWeight：柔性顶栏内部用 ProvideContentColorTextStyle 注入样式，
+                    //   展开时取 headlineMedium、收起时取 titleLarge，并在这两档之间做字号形变；
+                    //   这两个 token 都解析到 MaterialTheme.typography（即本项目 Type.kt 的 22sp / 18sp SemiBold），
+                    //   自己再传 style 会覆盖注入值，柔性形变直接失效。
+                    MediumFlexibleTopAppBar(
+                        title = {
+                            Text(text = currentTab.title)
+                        },
+                        actions = {
+                            // 解析页标题右上角：收藏网盘链接入口
+                            if (currentTab == MainTab.Resolve) {
+                                IconButton(onClick = { showBookmarks = true }) {
+                                    Icon(Icons.Outlined.Bookmarks, contentDescription = "收藏网盘链接")
+                                }
+                            }
+                        },
+                        scrollBehavior = scrollBehavior,
+                        // 柔性顶栏没有专用的 largeTopAppBarColors，用通用 topAppBarColors（同为 TopAppBarColors 类型）
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            scrolledContainerColor = MaterialTheme.colorScheme.surface
+                        )
+                    )
+                }
+                // ★ Material 3 Expressive 动效规格：MaterialTheme.motionScheme 是 @Composable 属性，只能在 composable 作用域读取；
+                //   而 AnimatedContent 的 transitionSpec 是普通 lambda（非 @Composable），所以必须在这里先取好、再捕获进 lambda。
+                //   （P4 全项目替换 tween 时遵循同一规则：规格取在 composable 里，transitionSpec / 回调里只用捕获值）
+                val motionScheme = MaterialTheme.motionScheme
+                val tabSlideSpec = motionScheme.defaultSpatialSpec<IntOffset>()
+                val tabFadeSpec = motionScheme.defaultEffectsSpec<Float>()
+                // Tab 内容区（竖屏 / 横屏共用）：每个页面独立保存状态，切换 Tab 再切回来不丢失；带 Material3 过渡动画（按 Tab 顺序决定方向）
+                val tabContent: @Composable () -> Unit = {
+                    AnimatedContent(
+                        targetState = currentTab,
+                        transitionSpec = {
+                            // 根据 Tab 顺序决定滑动方向：向右切（新Tab在右边）→ 新页从右滑入；向左切反向
+                            val forward = targetState.ordinal > initialState.ordinal
+                            // 位移/尺寸走 spatial 弹簧，透明度/颜色走 effects 弹簧（替代原来的 tween(220)/tween(160)）
+                            if (forward) {
+                                (fadeIn(tabFadeSpec) + slideInHorizontally(tabSlideSpec) { it / 4 })
+                                    .togetherWith(fadeOut(tabFadeSpec) + slideOutHorizontally(tabSlideSpec) { -it / 4 })
+                            } else {
+                                (fadeIn(tabFadeSpec) + slideInHorizontally(tabSlideSpec) { -it / 4 })
+                                    .togetherWith(fadeOut(tabFadeSpec) + slideOutHorizontally(tabSlideSpec) { it / 4 })
+                            }
+                        },
+                        label = "mainTab"
+                    ) { tab ->
+                        saveableStateHolder.SaveableStateProvider(tab) {
+                            when (tab) {
+                                MainTab.Resolve -> ResolveScreen(
+                                    scrollBehavior,
+                                    resolveViewModel,
+                                    quarkCloudViewModel,
+                                    xunleiCloudViewModel,
+                                    baiduCloudViewModel,
+                                    c139CloudViewModel,
+                                    ucCloudViewModel,
+                                    pan123CloudViewModel
+                                )
+                                MainTab.Drive -> DriveScreen(
+                                    scrollBehavior = scrollBehavior,
+                                    quarkAccount = quarkAccount,
+                                    ucAccount = ucAccount,
+                                    xunleiAccount = xunleiAccount,
+                                    baiduAccount = baiduAccount,
+                                    c139Account = c139Account,
+                                    pan123Account = pan123Account,
+                                    quarkCloudViewModel = quarkCloudViewModel,
+                                    ucCloudViewModel = ucCloudViewModel,
+                                    xunleiCloudViewModel = xunleiCloudViewModel,
+                                    baiduCloudViewModel = baiduCloudViewModel,
+                                    c139CloudViewModel = c139CloudViewModel,
+                                    pan123CloudViewModel = pan123CloudViewModel,
+                                    driveQuotaViewModel = driveQuotaViewModel,
+                                    onQuarkLogin = { showQuarkLogin = true },
+                                    onQuarkLogout = { viewModel.logout() },
+                                    onDownloadStarted = { currentTab = MainTab.Download },
+                                    onUCLogin = { showUCLogin = true },
+                                    onUCLogout = { ucViewModel.logout() },
+                                    onXunleiLogin = { showXunleiLogin = true },
+                                    onXunleiLogout = { xunleiViewModel.logout() },
+                                    onBaiduLogin = { showBaiduLogin = true },
+                                    onBaiduLogout = { baiduViewModel.logout() },
+                                    onC139Login = { showC139Login = true },
+                                    onC139Logout = { c139ViewModel.logout() },
+                                    onPan123Login = { showPan123Login = true },
+                                    onPan123Logout = { pan123ViewModel.logout() },
+                                    githubHasToken = githubHasTokenState,
+                                    onGitHubTokenClick = { showGitHubTokenDialog = true },
+                                    // 已配置 Token 点卡片主体：用 GET /user 取 login，经统一解析入口进入该账号仓库列表
+                                    onGitHubBrowseHome = {
+                                        scope.launch {
+                                            val login = githubApi.getUserLogin()
+                                            if (!login.isNullOrBlank()) {
+                                                resolveViewModel.startResolve("https://github.com/$login", "")
+                                                currentTab = MainTab.Resolve
+                                            }
+                                        }
+                                    },
+                                    // 更多菜单「清除 Token」：先二次确认再清除
+                                    onGitHubClearToken = { showGitHubClearConfirm = true }
+                                )
+                                MainTab.Download -> DownloadScreen(scrollBehavior, downloadViewModel)
+                                MainTab.Settings -> SettingsScreen(
+                                    scrollBehavior = scrollBehavior,
+                                    themeRowModifier = themeRowModifier,
+                                    aboutRowModifier = aboutRowModifier,
+                                    supportRowModifier = supportRowModifier,
+                                    onThemeClick = { showTheme = true },
+                                    onAboutClick = { showAbout = true },
+                                    onSupportClick = { showSupport = true },
+                                    backupManager = backupManager,
+                                    // 手动检查更新与开发调试预览都复用 MainScreen 的更新弹窗状态
+                                    onCheckUpdate = checkForUpdate,
+                                    onPreviewUpdateSheet = previewUpdateSheet
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (isLandscape) {
+                    // 横屏：左侧侧边导航栏（NavigationRail）+ 右侧顶栏 & 内容
                     Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
+                            .fillMaxSize()
+                            // 竖屏由 Scaffold 提供主题背景；横屏手动布局需显式设置，否则露出窗口默认白色
+                            .background(MaterialTheme.colorScheme.background)
                     ) {
-                        tabContent()
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            MainNavigationRail(
+                                currentTab = currentTab,
+                                onTabSelected = { currentTab = it }
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxSize()
+                            ) {
+                                topBarContent()
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                ) {
+                                    tabContent()
+                                }
+                            }
+                        }
+                        // 全局 Snackbar（横屏无底部栏，悬浮底部居中）
+                        SnackbarHost(
+                            hostState = snackbarHostState,
+                            modifier = Modifier.align(Alignment.BottomCenter)
+                        )
+                    }
+                } else {
+                    // 竖屏：Scaffold + 底部导航栏
+                    Scaffold(
+                        modifier = Modifier.fillMaxSize(),
+                        snackbarHost = { SnackbarHost(snackbarHostState) },
+                        topBar = { topBarContent() },
+                        bottomBar = {
+                            MainBottomBar(
+                                currentTab = currentTab,
+                                onTabSelected = { currentTab = it }
+                            )
+                        }
+                    ) { innerPadding ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                        ) {
+                            tabContent()
+                        }
+                    }
+                }
+
+                }
+            }
+
+            // 目标：叠加页（整屏 + 不透明底 + sharedBounds：从被点那一项长出来）
+            AnimatedVisibility(
+                visible = overlayRoute != null,
+                enter = fadeIn(effectsDefault()),
+                // ★ 退出时长必须≥ sharedBounds 形变的时长（默认 bounds 弹簧约 300ms）：
+                //   AnimatedVisibility 的退出一结束就会把内容移出组合，页面提前消失 → 回收形变被截断，
+                //   观感就是"退出一闪而过、像没做动画"。所以这里刻意用 300ms 的 tween 而不是 effectsFast(≈64ms)。
+                exit = fadeOut(tween(durationMillis = 300))
+            ) {
+                val targetScope = this
+                // ★ 读"正在展示的路由"而不是 overlayRoute：后者在点返回的瞬间就变 null 了，
+                //   退出动画会因此没有内容可放（整段退出效果消失）。
+                val route = shownRoute
+                if (route != null) {
+                    OverlayPage(
+                        modifier = if (route == OVERLAY_KEY_BOOKMARKS) {
+                            // 收藏页是从顶栏图标进来的，没有"被点的卡片"，不做形变
+                            Modifier
+                        } else {
+                            Modifier.sharedBounds(
+                                rememberSharedContentState(route),
+                                animatedVisibilityScope = targetScope
+                            )
+                        }
+                    ) {
+                        when (route) {
+                            OVERLAY_KEY_ABOUT -> AboutScreen(
+                                onBack = { showAbout = false },
+                                onPreviewOnboarding = {
+                                    context.getSharedPreferences("yunx_prefs", android.content.Context.MODE_PRIVATE)
+                                        .edit()
+                                        .putBoolean("onboarding_shown", false)
+                                        .apply()
+                                    showAbout = false
+                                    showOnboarding = true
+                                }
+                            )
+                            OVERLAY_KEY_SUPPORT -> SupportScreen(onBack = { showSupport = false })
+                            OVERLAY_KEY_THEME -> ThemeScreen(onBack = { showTheme = false })
+                            else -> BookmarkScreen(
+                                viewModel = bookmarkViewModel,
+                                onBack = { showBookmarks = false },
+                                onResolve = { link, pwd ->
+                                    showBookmarks = false
+                                    currentTab = MainTab.Resolve
+                                    resolveViewModel.startResolve(link, pwd)
+                                }
+                            )
+                        }
                     }
                 }
             }
-            // 全局 Snackbar（横屏无底部栏，悬浮底部居中）
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
         }
-    } else {
-        // 竖屏：Scaffold + 底部导航栏
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            snackbarHost = { SnackbarHost(snackbarHostState) },
-            topBar = { topBarContent() },
-            bottomBar = {
-                MainBottomBar(
-                    currentTab = currentTab,
-                    onTabSelected = { currentTab = it }
-                )
-            }
-        ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
-                tabContent()
-            }
-        }
-    }
-
-    // 关于云析：叠加覆盖层（淡入 + 轻微缩放过渡）
-    AnimatedVisibility(
-        visible = showAbout,
-        enter = fadeIn(tween(220)) + scaleIn(tween(220), initialScale = 0.96f),
-        exit = fadeOut(tween(160)) + scaleOut(tween(160), targetScale = 0.96f),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        AboutScreen(
-            onBack = { showAbout = false },
-            onPreviewOnboarding = {
-                context.getSharedPreferences("yunx_prefs", android.content.Context.MODE_PRIVATE)
-                    .edit()
-                    .putBoolean("onboarding_shown", false)
-                    .apply()
-                showAbout = false
-                showOnboarding = true
-            }
-        )
-    }
-
-    // 支持开发：叠加覆盖层（淡入 + 轻微缩放过渡）
-    AnimatedVisibility(
-        visible = showSupport,
-        enter = fadeIn(tween(220)) + scaleIn(tween(220), initialScale = 0.96f),
-        exit = fadeOut(tween(160)) + scaleOut(tween(160), targetScale = 0.96f),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        SupportScreen(
-            onBack = { showSupport = false }
-        )
-    }
-
-    // 主题与外观：叠加覆盖层（淡入 + 轻微缩放过渡）
-    AnimatedVisibility(
-        visible = showTheme,
-        enter = fadeIn(tween(220)) + scaleIn(tween(220), initialScale = 0.96f),
-        exit = fadeOut(tween(160)) + scaleOut(tween(160), targetScale = 0.96f),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        ThemeScreen(
-            onBack = { showTheme = false }
-        )
-    }
-
-    // 收藏网盘链接：叠加覆盖层（淡入 + 轻微缩放过渡）
-    AnimatedVisibility(
-        visible = showBookmarks,
-        enter = fadeIn(tween(220)) + scaleIn(tween(220), initialScale = 0.96f),
-        exit = fadeOut(tween(160)) + scaleOut(tween(160), targetScale = 0.96f),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        BookmarkScreen(
-            viewModel = bookmarkViewModel,
-            onBack = { showBookmarks = false },
-            onResolve = { link, pwd ->
-                showBookmarks = false
-                currentTab = MainTab.Resolve
-                resolveViewModel.startResolve(link, pwd)
-            }
-        )
-    }
     }
 
     // 首次下载引导：加入「忽略电池优化」白名单（锁屏保持下载生效的前提）
@@ -882,14 +997,14 @@ fun MainScreen() {
         )
     }
 
-    // 发现新版本弹窗（覆盖在主页之上）
-    pendingRelease?.let { release ->
-        if (showUpdateDialog) {
-            UpdateDialog(
+    // 发现新版本（底部弹窗，覆盖在主页之上）：全应用唯一的更新弹窗实现，启动检查 / 手动检查 / 开发调试预览共用
+    latestRelease?.let { release ->
+        if (showUpdateSheet) {
+            UpdateSheet(
                 currentVersion = UpdateChecker.currentVersion(context),
                 release = release,
                 onDownload = {
-                    showUpdateDialog = false
+                    showUpdateSheet = false
                     // 用内置下载功能下载更新 APK 到 Download 目录，并切到下载页
                     val apk = release.assets.firstOrNull { it.name.endsWith(".apk", true) }
                     if (apk != null) {
@@ -903,14 +1018,12 @@ fun MainScreen() {
                     }
                 },
                 onDownloadMirror = {
-                    showUpdateDialog = false
-                    // 镜像站下载：GitHub 直连慢/失败时走国内加速镜像；使用用户配置的前缀，未配置回退默认
+                    showUpdateSheet = false
+                    // 镜像站下载：GitHub 直连慢/失败时走国内加速镜像
                     val apk = release.assets.firstOrNull { it.name.endsWith(".apk", true) }
                     if (apk != null) {
                         scope.launch {
-                            val prefix = settings.githubMirrorPrefix?.ifBlank { null }
-                                ?: UpdateChecker.MIRROR_PREFIX
-                            downloadManager.enqueue(url = UpdateChecker.mirrorUrl(apk.downloadUrl, prefix), fileName = apk.name)
+                            downloadManager.enqueue(url = UpdateChecker.mirrorUrl(apk.downloadUrl), fileName = apk.name)
                             currentTab = MainTab.Download
                         }
                         SnackbarController.show("已通过镜像站加入下载，完成后点击「打开」即可安装")
@@ -918,110 +1031,160 @@ fun MainScreen() {
                         SnackbarController.show("未找到 APK 下载链接")
                     }
                 },
-                onLater = { showUpdateDialog = false },
+                // 网盘更新：Release 说明里的网盘链接直接丢给解析流程（与收藏页的「解析」同一路径）
+                onNetdiskUpdate = { link ->
+                    showUpdateSheet = false
+                    currentTab = MainTab.Resolve
+                    resolveViewModel.startResolve(link, null)
+                },
+                onLater = { showUpdateSheet = false },
                 onIgnore = {
                     context.getSharedPreferences("yunx_prefs", android.content.Context.MODE_PRIVATE)
                         .edit()
                         .putString("ignored_version", release.tagName)
                         .apply()
-                    showUpdateDialog = false
+                    showUpdateSheet = false
+                }
+            )
+        }
+
+        // GitHub Token 配置弹窗（网盘页入口）：Keystore 加密存储，输入用密码可见性切换
+        if (showGitHubTokenDialog) {
+            var tokenInput by rememberSaveable { mutableStateOf(GitHubTokenStore.getToken(context) ?: "") }
+            var passwordVisible by remember { mutableStateOf(false) }
+            AlertDialog(
+                onDismissRequest = { showGitHubTokenDialog = false },
+                title = { Text("GitHub Token") },
+                text = {
+                    Column {
+                        Text(
+                            text = "Token 仅用于提升 API 限额（匿名 60/小时，认证后 5000/小时）。经 Android Keystore AES-GCM 加密存储。",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = tokenInput,
+                            onValueChange = { tokenInput = it },
+                            singleLine = true,
+                            label = { Text("Personal Access Token") },
+                            visualTransformation = if (passwordVisible) VisualTransformation.None
+                            else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        if (passwordVisible) Icons.Outlined.Visibility
+                                        else Icons.Outlined.VisibilityOff,
+                                        contentDescription = if (passwordVisible) "隐藏" else "显示"
+                                    )
+                                }
+                            }
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        GitHubTokenStore.setToken(context, tokenInput.trim())
+                        githubHasTokenState = GitHubTokenStore.hasToken(context)
+                        showGitHubTokenDialog = false
+                        SnackbarController.show(if (tokenInput.isBlank()) "已清除 GitHub Token" else "GitHub Token 已保存")
+                    }) { Text("保存") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showGitHubTokenDialog = false }) { Text("取消") }
+                }
+            )
+        }
+
+        // 清除 GitHub Token 二次确认（网盘页更多菜单）
+        if (showGitHubClearConfirm) {
+            AlertDialog(
+                onDismissRequest = { showGitHubClearConfirm = false },
+                title = { Text("清除 GitHub Token？") },
+                text = { Text("清除后 GitHub API 回退匿名限额（60 次/小时/IP）。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        GitHubTokenStore.setToken(context, null)
+                        githubHasTokenState = false
+                        showGitHubClearConfirm = false
+                        SnackbarController.show("已清除 GitHub Token")
+                    }) { Text("清除", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showGitHubClearConfirm = false }) { Text("取消") }
                 }
             )
         }
     }
+}
 
-    // GitHub Token 管理弹窗：加密存储，输入框用密码样式（不回显完整 Token）
-    if (showGitHubTokenDialog) {
-        AlertDialog(
-            onDismissRequest = { showGitHubTokenDialog = false },
-            title = { Text("GitHub Token") },
-            text = {
-                Column {
-                    Text(
-                        text = "配置 Token 可将 API 限额从 60 次/小时提升至 5000 次/小时。Token 经 Android Keystore 加密存储，不会明文保存，也不会上传。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = githubTokenInput,
-                        onValueChange = { githubTokenInput = it },
-                        label = { Text("Personal Access Token") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    GitHubTokenStore.setToken(context, githubTokenInput)
-                    githubTokenInput = ""
-                    githubHasTokenState = GitHubTokenStore.hasToken(context)
-                    showGitHubTokenDialog = false
-                }) { Text("保存") }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        GitHubTokenStore.setToken(context, null)
-                        githubTokenInput = ""
-                        githubHasTokenState = false
-                        showGitHubTokenDialog = false
-                    }) { Text("清除") }
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = { showGitHubTokenDialog = false }) { Text("取消") }
-                }
-            }
-        )
-    }
 
-    // 清除 GitHub Token 二次确认（避免更多菜单误触直接清除）
-    if (showGitHubClearConfirm) {
-        AlertDialog(
-            onDismissRequest = { showGitHubClearConfirm = false },
-            title = { Text("清除 GitHub Token？") },
-            text = { Text("清除后 API 限额将回到 60 次/小时，需要时可重新配置。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    GitHubTokenStore.setToken(context, null)
-                    githubHasTokenState = false
-                    showGitHubClearConfirm = false
-                }) {
-                    Text("清除", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showGitHubClearConfirm = false }) { Text("取消") }
-            }
-        )
+/**
+ * 叠加页容器（关于云析 / 支持开发 / 主题与外观 / 收藏）：整屏 + 不透明底色 + 可选的 sharedBounds 形变。
+ *
+ * ★ 它与主界面的关系是「互斥」而不是「叠加」：两者是同一个 SharedTransitionLayout 下两个
+ *   `AnimatedVisibility`，叠加页打开时**主界面会被移出组合**。这一点是硬要求，不是洁癖——
+ *   实测（多轮截图 + E 级日志）证明：只要主界面常驻叠在下面，这些页面里的 `Card` 底色就会整片
+ *   画不出来（文字/图标/描边/分隔线都在，就是底色没了；把底色写死成亮绿也一样不画 ⇒ 与颜色无关），
+ *   而且缺失区域的分界线会随滚动/折叠状态移动。改成互斥（源被移除）后完全正常。
+ *   过渡期间两者会短暂共存（形变需要源的边界），这是可接受的：动画一结束源就被释放。
+ *
+ * ★ 底色仍要自己铺：M3E(material3 1.5.0-alpha18) 的 Scaffold 已不带底色
+ *   （`ScaffoldDefaults` 只剩 `getContentWindowInsets`），页面不铺底就是透的。
+ */
+@Composable
+private fun OverlayPage(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    // sharedBounds 加在"底色之外"：形变中的容器自带不透明底色，过渡期间不会透出下层的窗口底色
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(modifier)
+            .background(MaterialTheme.colorScheme.surface)
+    ) {
+        content()
     }
 }
 
 /**
- * 底部导航栏（竖屏）：4 个主 Tab（解析 / 网盘 / 下载 / 设置）。
+ * 底部导航条（竖屏）：4 个主 Tab（解析 / 网盘 / 下载 / 设置）。
+ * 用 Expressive 的 ShortNavigationBar（选中项带形状指示器 + 弹簧动效，item 由组件内部按 EqualWeight 均分，
+ * 不需要自己加 weight）。
+ * ★ 高度：Expressive 规范高度是 64dp（NavigationBarTokens.ContainerHeight），比经典 NavigationBar 的
+ *   TallContainerHeight（80dp）矮 16dp，产品上要求保持原高度。注意不能直接给 ShortNavigationBar 传
+ *   Modifier.heightIn —— 它内部布局按 TopStart 对齐，撑高外层只会让 64dp 的内容贴顶。
+ *   故外面套一层同色 Box 并居中：视觉上等价于原来的 80dp 导航栏，item 布局仍是 Expressive。
+ *   三键导航机型上系统栏内边距会再叠加（经典版同样如此），因此会比 80dp 更高一点，属正常。
  */
 @Composable
 private fun MainBottomBar(
     currentTab: MainTab,
     onTabSelected: (MainTab) -> Unit
 ) {
-    NavigationBar {
-        MainTab.values().forEach { tab ->
-            NavigationBarItem(
-                selected = currentTab == tab,
-                onClick = { onTabSelected(tab) },
-                icon = {
-                    Icon(
-                        imageVector = if (currentTab == tab) tab.selectedIcon else tab.unselectedIcon,
-                        contentDescription = tab.title
-                    )
-                },
-                label = { Text(tab.title) }
-            )
+    val barColor = ShortNavigationBarDefaults.containerColor
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 80.dp)
+            .background(barColor),
+        contentAlignment = Alignment.Center
+    ) {
+        ShortNavigationBar(containerColor = barColor) {
+            MainTab.values().forEach { tab ->
+                ShortNavigationBarItem(
+                    selected = currentTab == tab,
+                    onClick = { onTabSelected(tab) },
+                    icon = {
+                        Icon(
+                            imageVector = if (currentTab == tab) tab.selectedIcon else tab.unselectedIcon,
+                            contentDescription = tab.title
+                        )
+                    },
+                    label = { Text(tab.title) }
+                )
+            }
         }
     }
 }
+
 
 /**
  * 侧边导航栏（横屏）：同 4 个主 Tab，未选中项只显示图标，节省横向空间。
