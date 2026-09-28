@@ -43,33 +43,37 @@ object GitHubLinkParser {
 
     private val urlRegex = Regex("""https?://[^\s]+""")
 
+    // owner/repo 字符集：\p{Pd} 是 Unicode Dash 通用属性，覆盖 ASCII '-' 及 U+2010~U+2015、
+    // U+2212、U+FE58、U+FE63、U+FF0D 等全部连字符家族——保护真用特殊连字符命名的仓库原样识别。
+    private val NAME = """[A-Za-z0-9_.\p{Pd}]"""
+
     // raw.githubusercontent.com/{owner}/{repo}/{branch}/{path...}
     private val rawRegex = Regex(
-        """raw\.githubusercontent\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/[^/]+/(.+)""",
+        """raw\.githubusercontent\.com/($NAME+)/($NAME+)/[^/]+/(.+)""",
         RegexOption.IGNORE_CASE
     )
 
     // github.com/{owner}/{repo}/releases/download/{tag}/{file...}
     private val releaseDownloadRegex = Regex(
-        """github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/releases/download/[^/]+/(.+)""",
+        """github\.com/($NAME+)/($NAME+)/releases/download/[^/]+/(.+)""",
         RegexOption.IGNORE_CASE
     )
 
     // github.com/{owner}/{repo}/raw/{branch}/{path...}（会 302 到 raw.githubusercontent.com）
     private val githubRawRegex = Regex(
-        """github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/raw/[^/]+/(.+)""",
+        """github\.com/($NAME+)/($NAME+)/raw/[^/]+/(.+)""",
         RegexOption.IGNORE_CASE
     )
 
     // github.com/{owner}/{repo}（及其后续子路径 tree/blob/releases 等）
     private val repoRegex = Regex(
-        """github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:/(.*))?""",
+        """github\.com/($NAME+)/($NAME+)(?:/(.*))?""",
         RegexOption.IGNORE_CASE
     )
 
     // github.com/{owner}（仅一段路径）
     private val accountRegex = Regex(
-        """github\.com/([A-Za-z0-9_.-]+)/?(?:[?#]|$)""",
+        """github\.com/($NAME+)/?(?:[?#]|$)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -82,13 +86,25 @@ object GitHubLinkParser {
     )
 
     fun parse(text: String): GitHubLinkType? {
-        // 微信/排版复制常把 ASCII 连字符替换为 U+2011（非断行连字符）等 Unicode 连字符家族，
-        // 正则 [A-Za-z0-9_.-] 只认 ASCII，会在仓库名里断掉导致解析失败。入口先规范化为 ASCII '-'。
-        val normalized = normalizeLinkDashes(text)
-        val url = urlRegex.find(normalized.trim())?.value
+        val rawUrl = urlRegex.find(text.trim())?.value
             ?.trimEnd('。', '，', ',', '；', ';', ')', ']', '}', '"', '\'')
             ?: return null
 
+        // 1) 原样优先：\p{Pd} 已覆盖 Unicode 连字符家族，真用特殊连字符命名的仓库原样识别、原样保留。
+        matchRules(rawUrl)?.let { return it }
+
+        // 2) 兜底：原样未命中时（典型场景——微信/豆包复制把 ASCII '-' 污染成 U+2011 等），
+        //    把连字符家族统一转 ASCII '-' 再跑一次规则。此时 owner/repo 已是规范化 ASCII，请求用规范化链接。
+        //    仅对 URL 段做规范化，不动其他字符。
+        val fallbackUrl = normalizeDashesToAscii(rawUrl)
+        if (fallbackUrl != rawUrl) {
+            matchRules(fallbackUrl)?.let { return it }
+        }
+        return null
+    }
+
+    /** 按 DirectFile > Repository > Account 优先级跑全部规则 */
+    private fun matchRules(url: String): GitHubLinkType? {
         // 1) 文件直链（优先级最高）
         rawRegex.find(url)?.let { m ->
             fileNameOf(m.groupValues[3])?.let { name ->
@@ -129,30 +145,21 @@ object GitHubLinkParser {
         return null
     }
 
+    /** 把 Unicode 连字符家族统一替换为 ASCII '-'；无变化时返回原串 */
+    private fun normalizeDashesToAscii(url: String): String {
+        val chars = charArrayOf(
+            '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015',
+            '\u2212', '\ufe58', '\ufe63', '\uff0d'
+        )
+        var out = url
+        for (c in chars) out = out.replace(c, '-')
+        return out
+    }
+
     /** 从路径段取最后一段作为文件名，去掉 query/fragment；空则返回 null */
     private fun fileNameOf(path: String): String? {
         val clean = path.substringBefore('?').substringBefore('#')
         val name = clean.substringAfterLast('/')
         return name.takeIf { it.isNotBlank() }
     }
-}
-
-/**
- * 把 Unicode 连字符家族统一替换为 ASCII 连字符 `-`。
- *
- * 场景：微信/排版工具复制链接时，常把仓库名/路径里的 ASCII `-` 替换为 U+2011（非断行连字符）
- * 等字符，导致正则（只认 ASCII `[A-Za-z0-9_.-]`）在仓库名处断掉、解析失败。
- * 仅替换连字符家族，不动其他字符，避免误伤合法链接。
- */
-internal fun normalizeLinkDashes(input: String): String {
-    // U+2010 HYPHEN, U+2011 NON-BREAKING HYPHEN, U+2012 FIGURE DASH, U+2013 EN DASH,
-    // U+2014 EM DASH, U+2015 HORIZONTAL BAR, U+2212 MINUS SIGN, U+FE58 SMALL EM DASH,
-    // U+FE63 SMALL HYPHEN-MINUS, U+FF0D FULLWIDTH HYPHEN-MINUS
-    val replaceChars = charArrayOf(
-        '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015',
-        '\u2212', '\ufe58', '\ufe63', '\uff0d'
-    )
-    var out = input
-    for (c in replaceChars) out = out.replace(c, '-')
-    return out
 }

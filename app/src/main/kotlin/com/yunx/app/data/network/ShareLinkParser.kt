@@ -54,9 +54,7 @@ object ShareLinkParser {
     private val pwdInTextRegex = Regex("""(?:提取码|访问码|密码)[：:]\s*([A-Za-z0-9]{4,8})""")
 
     fun parse(text: String): ParsedShare? {
-        // Unicode 连字符家族规范化（微信/排版复制会把 '-' 替换为 U+2011 等），与 GitHubLinkParser 同处理
-        val normalized = normalizeLinkDashes(text)
-        val url = urlRegex.find(normalized.trim())?.value
+        val url = urlRegex.find(text.trim())?.value
             ?.trimEnd('。', '，', ',', '；', ';', ')', ']', '}', '"', '\'')
             ?: return null
         // 夸克链接
