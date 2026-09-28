@@ -82,7 +82,10 @@ object GitHubLinkParser {
     )
 
     fun parse(text: String): GitHubLinkType? {
-        val url = urlRegex.find(text.trim())?.value
+        // 微信/排版复制常把 ASCII 连字符替换为 U+2011（非断行连字符）等 Unicode 连字符家族，
+        // 正则 [A-Za-z0-9_.-] 只认 ASCII，会在仓库名里断掉导致解析失败。入口先规范化为 ASCII '-'。
+        val normalized = normalizeLinkDashes(text)
+        val url = urlRegex.find(normalized.trim())?.value
             ?.trimEnd('。', '，', ',', '；', ';', ')', ']', '}', '"', '\'')
             ?: return null
 
@@ -132,4 +135,24 @@ object GitHubLinkParser {
         val name = clean.substringAfterLast('/')
         return name.takeIf { it.isNotBlank() }
     }
+}
+
+/**
+ * 把 Unicode 连字符家族统一替换为 ASCII 连字符 `-`。
+ *
+ * 场景：微信/排版工具复制链接时，常把仓库名/路径里的 ASCII `-` 替换为 U+2011（非断行连字符）
+ * 等字符，导致正则（只认 ASCII `[A-Za-z0-9_.-]`）在仓库名处断掉、解析失败。
+ * 仅替换连字符家族，不动其他字符，避免误伤合法链接。
+ */
+internal fun normalizeLinkDashes(input: String): String {
+    // U+2010 HYPHEN, U+2011 NON-BREAKING HYPHEN, U+2012 FIGURE DASH, U+2013 EN DASH,
+    // U+2014 EM DASH, U+2015 HORIZONTAL BAR, U+2212 MINUS SIGN, U+FE58 SMALL EM DASH,
+    // U+FE63 SMALL HYPHEN-MINUS, U+FF0D FULLWIDTH HYPHEN-MINUS
+    val replaceChars = charArrayOf(
+        '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015',
+        '\u2212', '\ufe58', '\ufe63', '\uff0d'
+    )
+    var out = input
+    for (c in replaceChars) out = out.replace(c, '-')
+    return out
 }

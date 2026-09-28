@@ -752,19 +752,21 @@ class ResolveViewModel(
 
     /** 开始解析：链接 → token →（密码）→ 根目录列表 */
     fun startResolve(link: String, pwd: String?) {
+        // Unicode 连字符家族规范化（微信复制的 U+2011 等），双保险：解析入口统一处理一次
+        val normalizedLink = com.yunx.app.data.network.normalizeLinkDashes(link)
         currentLink = link
         currentPwd = pwd
         // GitHub 链接统一识别：仓库 / 账号 / 文件直链 → GitHub 解析流程。
         // 放在网盘解析之前，使「收藏打开 / 剪贴板 / 解析页 / 后续系统分享」等所有
         // 走 startResolve 的入口都能解析 GitHub 链接，无需在 UI 层各处重复判断。
-        val github = GitHubLinkParser.parse(link)
+        val github = com.yunx.app.data.network.GitHubLinkParser.parse(normalizedLink)
         if (github != null) {
             startGitHubResolve(github)
             return
         }
         viewModelScope.launch {
             uiState = ResolveUiState.Loading
-            val parsed = ShareLinkParser.parse(link)
+            val parsed = com.yunx.app.data.network.ShareLinkParser.parse(normalizedLink)
             if (parsed == null) {
                 uiState = ResolveUiState.Error("无法识别分享链接")
                 return@launch
