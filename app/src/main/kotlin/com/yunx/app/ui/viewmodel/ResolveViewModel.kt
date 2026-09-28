@@ -814,11 +814,22 @@ class ResolveViewModel(
             when (linkType) {
                 is GitHubLinkType.Repository -> {
                     currentLink = "https://github.com/${linkType.owner}/${linkType.repo}"
-                    val repo = githubApi?.getRepo(linkType.owner, linkType.repo)
-                    if (repo == null) {
-                        uiState = ResolveUiState.Error("无法获取仓库信息：${linkType.owner}/${linkType.repo}")
+                    // 失败原因透传 UI：区分 404（仓库不存在）/403（限流/Token）/网络异常，并直接显示 HTTP 状态码
+                    val result = githubApi?.getRepoResult(linkType.owner, linkType.repo)
+                    if (result !is GitHubApi.RepoResult.Success) {
+                        val f = result as? GitHubApi.RepoResult.Failure
+                        val reason = when {
+                            f == null -> "网络连接失败，请重试"
+                            f.networkError -> "网络连接失败，请重试"
+                            f.code == 404 -> "HTTP 404，仓库不存在"
+                            f.code == 403 -> "HTTP 403，API 限流，请检查 Token"
+                            f.code != null -> "HTTP ${f.code}"
+                            else -> "未知错误"
+                        }
+                        uiState = ResolveUiState.Error("无法获取仓库信息：${linkType.owner}/${linkType.repo}（$reason）")
                         return@launch
                     }
+                    val repo = result.repo
                     session = ShareSession(shareId = "github:${repo.fullName}", stoken = "", title = repo.fullName)
                     currentGitHubRepo = repo
                     currentDirFid = "github:root"

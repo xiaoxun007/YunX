@@ -18,6 +18,7 @@
 
 package com.yunx.app.data.network
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -30,9 +31,9 @@ import org.json.JSONObject
  *
  * - 未配置 Token：限额 60 次/小时/IP；
  * - 配置 Token：限额提升至 5000 次/小时；
- * - Token 仅用于提升限额，不用于登录态；严禁打印到日志。
+ * - Token 仅用于提升限额，不用于登录态；严禁打印到日志（日志只带 withToken 布尔）。
  *
- * 所有方法均运行在 [Dispatchers.IO]，失败（网络异常 / 非 2xx / JSON 解析失败）返回 null。
+ * 所有方法均运行在 [Dispatchers.IO]。
  */
 class GitHubApi(
     private val clientProvider: () -> OkHttpClient = { HttpClients.apiClient() },
@@ -41,14 +42,39 @@ class GitHubApi(
     /** 每次请求动态获取全局客户端（忽略 SSL 开关切换即时生效） */
     private val client get() = clientProvider()
 
-    /** 获取单个仓库信息：GET /repos/{owner}/{repo}（结果经统一缓存） */
-    suspend fun getRepo(owner: String, repo: String): GitHubRepo? = withContext(Dispatchers.IO) {
-        runCatching {
-            val raw = cachedBody("repo:$owner/$repo", "https://api.github.com/repos/$owner/$repo")
-                ?: return@withContext null
-            parseRepo(JSONObject(raw))
-        }.getOrNull()
+    private companion object {
+        const val TAG = "GitHubApi"
     }
+
+    /** 成功响应；失败时携带原因（HTTP 状态码或网络异常），便于 UI 给出可诊断提示 */
+    sealed interface RepoResult {
+        data class Success(val repo: GitHubRepo) : RepoResult
+        data class Failure(
+            /** HTTP 状态码；网络异常时为 null */
+            val code: Int?,
+            /** true = 网络层异常（IO/超时/断网），false = HTTP 非 2xx */
+            val networkError: Boolean
+        ) : RepoResult
+    }
+
+    /**
+     * 获取单个仓库信息：GET /repos/{owner}/{repo}（结果经统一缓存）。
+     * 失败原因透传给调用方，用于在 UI 上区分 404/403/网络异常。
+     */
+    suspend fun getRepoResult(owner: String, repo: String): RepoResult = withContext(Dispatchers.IO) {
+        val url = "https://api.github.com/repos/$owner/$repo"
+        when (val out = cachedBody("repo:$owner/$repo", url)) {
+            is GitHubResponseCache.FetchResult.Ok -> runCatching {
+                RepoResult.Success(parseRepo(JSONObject(out.body)))
+            }.getOrDefault(RepoResult.Failure(code = null, networkError = false))
+            is GitHubResponseCache.FetchResult.HttpError -> RepoResult.Failure(out.code, networkError = false)
+            GitHubResponseCache.FetchResult.NetworkError -> RepoResult.Failure(code = null, networkError = true)
+        }
+    }
+
+    /** 兼容旧调用点：只取仓库对象，失败返回 null（不区分原因） */
+    suspend fun getRepo(owner: String, repo: String): GitHubRepo? =
+        (getRepoResult(owner, repo) as? RepoResult.Success)?.repo
 
     /**
      * 获取目录树（仅当前层，**不加 recursive=1**，由浏览层按需进入子目录）。
@@ -57,11 +83,11 @@ class GitHubApi(
     suspend fun getTree(owner: String, repo: String, sha: String): List<GitHubTreeEntry>? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val raw = cachedBody(
+                val raw = (cachedBody(
                     "tree:$owner/$repo/$sha",
                     "https://api.github.com/repos/$owner/$repo/git/trees/$sha"
-                ) ?: return@withContext null
-                val arr = JSONObject(raw).optJSONArray("tree") ?: return@withContext emptyList()
+                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
+                val arr = JSONObject(raw).optJSONArray("tree") ?: return@runCatching emptyList()
                 buildList {
                     for (i in 0 until arr.length()) {
                         val o = arr.optJSONObject(i) ?: continue
@@ -82,10 +108,10 @@ class GitHubApi(
     suspend fun getReleases(owner: String, repo: String, page: Int = 1): List<GitHubRelease>? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val raw = cachedBody(
+                val raw = (cachedBody(
                     "releases:$owner/$repo:$page",
                     "https://api.github.com/repos/$owner/$repo/releases?per_page=100&page=$page"
-                ) ?: return@withContext null
+                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
                 val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
@@ -100,10 +126,10 @@ class GitHubApi(
     suspend fun getUserRepos(owner: String, page: Int = 1): List<GitHubRepo>? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val raw = cachedBody(
+                val raw = (cachedBody(
                     "userrepos:$owner:$page:${tokenFingerprint()}",
                     "https://api.github.com/users/$owner/repos?per_page=100&page=$page&sort=updated"
-                ) ?: return@withContext null
+                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
                 val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
@@ -118,10 +144,10 @@ class GitHubApi(
     suspend fun getOrgRepos(owner: String, page: Int = 1): List<GitHubRepo>? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val raw = cachedBody(
+                val raw = (cachedBody(
                     "orgrepos:$owner:$page:${tokenFingerprint()}",
                     "https://api.github.com/orgs/$owner/repos?per_page=100&page=$page&sort=updated"
-                ) ?: return@withContext null
+                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
                 val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
@@ -139,8 +165,8 @@ class GitHubApi(
     suspend fun getUserType(owner: String): String? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val raw = cachedBody("usertype:$owner", "https://api.github.com/users/$owner")
-                    ?: return@withContext null
+                val raw = (cachedBody("usertype:$owner", "https://api.github.com/users/$owner")
+                    as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
                 JSONObject(raw).optString("type").takeIf { it.isNotBlank() }
             }.getOrNull()
         }
@@ -152,8 +178,8 @@ class GitHubApi(
     suspend fun getUserLogin(): String? =
         withContext(Dispatchers.IO) {
             runCatching {
-                val raw = cachedBody("userlogin:${tokenFingerprint()}", "https://api.github.com/user")
-                    ?: return@withContext null
+                val raw = (cachedBody("userlogin:${tokenFingerprint()}", "https://api.github.com/user")
+                    as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
                 JSONObject(raw).optString("login").takeIf { it.isNotBlank() }
             }.getOrNull()
         }
@@ -167,35 +193,52 @@ class GitHubApi(
      */
     suspend fun getReadme(owner: String, repo: String, defaultBranch: String): String? =
         withContext(Dispatchers.IO) {
-            // README 原文缓存；>128KB 不写缓存（防超大 README 占内存，实际极少超）
+            // README 原文缓存；>128KB 不写缓存（防超大 README 占内存，实际极少超）。
+            // 返回 FetchResult：HTTP 404 等短缓存（确定无 README），网络异常不缓存（下次重试）。
             GitHubResponseCache.getOrFetch("readme:$owner/$repo/$defaultBranch", maxBytes = 128 * 1024) {
-                runCatching {
-                    // 1) API readme 接口（原始 Markdown）
-                    val apiRequest = Request.Builder()
-                        .url("https://api.github.com/repos/$owner/$repo/readme")
-                        .header("User-Agent", "YunX")
-                        .header("Accept", "application/vnd.github.raw")
-                        .get()
-                        .also { b ->
-                            tokenProvider()?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
-                        }
-                        .build()
+                val started = System.currentTimeMillis()
+                val withToken = !tokenProvider().isNullOrBlank()
+                // 1) API readme 接口（原始 Markdown）
+                val apiRequest = Request.Builder()
+                    .url("https://api.github.com/repos/$owner/$repo/readme")
+                    .header("User-Agent", "YunX")
+                    .header("Accept", "application/vnd.github.raw")
+                    .get()
+                    .also { b ->
+                        tokenProvider()?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
+                    }
+                    .build()
+                var lastHttp: Int? = null
+                try {
                     client.newCall(apiRequest).execute().use { resp ->
+                        lastHttp = resp.code
                         if (resp.isSuccessful) {
                             val body = resp.body?.string()
-                            if (!body.isNullOrBlank()) return@getOrFetch body
+                            if (!body.isNullOrBlank()) {
+                                logReq("readme(api)", resp.code, started, withToken)
+                                return@getOrFetch GitHubResponseCache.FetchResult.Ok(body)
+                            }
                         }
-                        // 404 或空：继续兜底
                     }
                     // 2) 兜底：raw README.md
-                    val rawRequest = buildRequest(
+                    client.newCall(buildRequest(
                         "https://raw.githubusercontent.com/$owner/$repo/$defaultBranch/README.md"
-                    )
-                    client.newCall(rawRequest).execute().use { resp ->
-                        if (!resp.isSuccessful) return@use null
-                        resp.body?.string()?.takeIf { it.isNotBlank() }
+                    )).execute().use { resp ->
+                        lastHttp = resp.code
+                        logReq("readme(raw)", resp.code, started, withToken)
+                        if (resp.isSuccessful) {
+                            val body = resp.body?.string()
+                            if (!body.isNullOrBlank()) {
+                                return@getOrFetch GitHubResponseCache.FetchResult.Ok(body)
+                            }
+                        }
                     }
-                }.getOrNull()
+                    // 两个源都非 2xx：确定无 README，短缓存（10s 后仍可重试）
+                    GitHubResponseCache.FetchResult.HttpError(lastHttp ?: -1)
+                } catch (e: Exception) {
+                    logNetErr("readme", e)
+                    GitHubResponseCache.FetchResult.NetworkError
+                }
             }
         }
 
@@ -269,35 +312,73 @@ class GitHubApi(
     private fun tokenFingerprint(): String =
         tokenProvider()?.takeIf { it.isNotBlank() }?.hashCode()?.toString() ?: "anon"
 
+    /** 成功请求日志：只打 withToken 布尔，绝不打 Token 本身 */
+    private fun logReq(tag: String, code: Int, startedAt: Long, withToken: Boolean, url: String = "") {
+        Log.d(TAG, "$tag -> HTTP $code (${System.currentTimeMillis() - startedAt}ms, token=$withToken) $url")
+    }
+
+    /** 网络异常日志：打异常类名+消息，便于区分超时/断网/SSL 等 */
+    private fun logNetErr(tag: String, e: Throwable) {
+        Log.w(TAG, "$tag network error: ${e.javaClass.simpleName}: ${e.message}")
+    }
+
     /**
-     * 走统一缓存取 JSON 原始响应文本。非 2xx / 空 body 返回 null（失败也会被缓存短 TTL）。
+     * 走统一缓存取 JSON 原始响应文本，返回 [GitHubResponseCache.FetchResult]：
+     * - 2xx 非空 body → Ok（成功缓存）；
+     * - 非 2xx → HttpError（短缓存 10s，防 403 限流重试风暴）；
+     * - 网络异常（IOException 等）→ NetworkError（**不写缓存**，下次立即重试，避免偶发失败被放大）。
      * 调用方再自行用 JSONObject/JSONArray 解析。
      */
-    private suspend fun cachedBody(key: String, url: String): String? =
+    private suspend fun cachedBody(key: String, url: String): GitHubResponseCache.FetchResult =
         GitHubResponseCache.getOrFetch(key) {
-            client.newCall(buildRequest(url)).execute().use { resp ->
-                if (!resp.isSuccessful) return@use null
-                resp.body?.string()
+            val started = System.currentTimeMillis()
+            val withToken = !tokenProvider().isNullOrBlank()
+            try {
+                client.newCall(buildRequest(url)).execute().use { resp ->
+                    val body = if (resp.isSuccessful) resp.body?.string() else null
+                    logReq("GET", resp.code, started, withToken, url)
+                    when {
+                        body != null -> GitHubResponseCache.FetchResult.Ok(body)
+                        else -> GitHubResponseCache.FetchResult.HttpError(resp.code)
+                    }
+                }
+            } catch (e: Exception) {
+                logNetErr("GET $url", e)
+                GitHubResponseCache.FetchResult.NetworkError
             }
         }
 
     /** 构建带鉴权头的 Request 并执行，返回 JSONObject；非 2xx / 空响应 / 解析失败返回 null */
     private fun requestJson(url: String): JSONObject? {
         val request = buildRequest(url)
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            val body = response.body?.string() ?: return null
-            return runCatching { JSONObject(body) }.getOrNull()
+        val started = System.currentTimeMillis()
+        val withToken = !tokenProvider().isNullOrBlank()
+        return try {
+            client.newCall(request).execute().use { response ->
+                logReq("requestJson", response.code, started, withToken, url)
+                if (!response.isSuccessful) return null
+                val body = response.body?.string() ?: return null
+                runCatching { JSONObject(body) }.getOrNull()
+            }
+        } catch (e: Exception) {
+            logNetErr("requestJson $url", e); null
         }
     }
 
     /** 构建带鉴权头的 Request 并执行，返回 JSONArray；非 2xx / 空响应 / 解析失败返回 null */
     private fun requestJsonArray(url: String): JSONArray? {
         val request = buildRequest(url)
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            val body = response.body?.string() ?: return null
-            return runCatching { JSONArray(body) }.getOrNull()
+        val started = System.currentTimeMillis()
+        val withToken = !tokenProvider().isNullOrBlank()
+        return try {
+            client.newCall(request).execute().use { response ->
+                logReq("requestJsonArray", response.code, started, withToken, url)
+                if (!response.isSuccessful) return null
+                val body = response.body?.string() ?: return null
+                runCatching { JSONArray(body) }.getOrNull()
+            }
+        } catch (e: Exception) {
+            logNetErr("requestJsonArray $url", e); null
         }
     }
 
