@@ -86,7 +86,7 @@ class GitHubApi(
                 val raw = (cachedBody(
                     "tree:$owner/$repo/$sha",
                     "https://api.github.com/repos/$owner/$repo/git/trees/$sha"
-                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
+                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@withContext null
                 val arr = JSONObject(raw).optJSONArray("tree") ?: return@runCatching emptyList()
                 buildList {
                     for (i in 0 until arr.length()) {
@@ -111,7 +111,7 @@ class GitHubApi(
                 val raw = (cachedBody(
                     "releases:$owner/$repo:$page",
                     "https://api.github.com/repos/$owner/$repo/releases?per_page=100&page=$page"
-                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
+                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@withContext null
                 val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
@@ -129,7 +129,7 @@ class GitHubApi(
                 val raw = (cachedBody(
                     "userrepos:$owner:$page:${tokenFingerprint()}",
                     "https://api.github.com/users/$owner/repos?per_page=100&page=$page&sort=updated"
-                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
+                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@withContext null
                 val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
@@ -147,7 +147,7 @@ class GitHubApi(
                 val raw = (cachedBody(
                     "orgrepos:$owner:$page:${tokenFingerprint()}",
                     "https://api.github.com/orgs/$owner/repos?per_page=100&page=$page&sort=updated"
-                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
+                ) as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@withContext null
                 val arr = JSONArray(raw)
                 buildList {
                     for (i in 0 until arr.length()) {
@@ -166,7 +166,7 @@ class GitHubApi(
         withContext(Dispatchers.IO) {
             runCatching {
                 val raw = (cachedBody("usertype:$owner", "https://api.github.com/users/$owner")
-                    as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
+                    as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@withContext null
                 JSONObject(raw).optString("type").takeIf { it.isNotBlank() }
             }.getOrNull()
         }
@@ -179,7 +179,7 @@ class GitHubApi(
         withContext(Dispatchers.IO) {
             runCatching {
                 val raw = (cachedBody("userlogin:${tokenFingerprint()}", "https://api.github.com/user")
-                    as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@runCatching null
+                    as? GitHubResponseCache.FetchResult.Ok)?.body ?: return@withContext null
                 JSONObject(raw).optString("login").takeIf { it.isNotBlank() }
             }.getOrNull()
         }
@@ -330,7 +330,7 @@ class GitHubApi(
      * 调用方再自行用 JSONObject/JSONArray 解析。
      */
     private suspend fun cachedBody(key: String, url: String): GitHubResponseCache.FetchResult =
-        GitHubResponseCache.getOrFetch(key) {
+        GitHubResponseCache.getOrFetchResult(key) {
             val started = System.currentTimeMillis()
             val withToken = !tokenProvider().isNullOrBlank()
             try {

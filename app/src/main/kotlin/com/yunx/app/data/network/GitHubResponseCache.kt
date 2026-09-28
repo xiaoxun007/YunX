@@ -64,20 +64,23 @@ object GitHubResponseCache {
     private const val MAX_ENTRIES = 256
 
     private val cache = ConcurrentHashMap<String, Entry>()
-    private val inFlight = ConcurrentHashMap<String, CompletableDeferred<String?>>()
+    private val inFlight = ConcurrentHashMap<String, CompletableDeferred<FetchResult>>()
     private val evictMutex = Mutex()
 
     /**
      * 命中有效缓存直接返回；否则执行 [fetch] 取网络结果并按结果类型决定写缓存策略。
-     * 同 key 并发只发一次请求，其余等待同一 Deferred。
+     * 同 key 并发只发一次请求，其余等待同一 Deferred（结果类型透传）。
      * @param maxBytes 成功结果超过此大小则不写缓存（防大 README 占内存）；<=0 不限制。
-     * @return 成功时为响应原文；HTTP 失败/网络异常均返回 null（调用方无法区分时按失败处理）。
      */
-    suspend fun getOrFetch(key: String, maxBytes: Int = 0, fetch: suspend () -> FetchResult): String? {
-        // 1) 命中（含 HTTP 失败哨兵在短 TTL 内）直接返回
+    suspend fun getOrFetchResult(key: String, maxBytes: Int = 0, fetch: suspend () -> FetchResult): FetchResult {
+        // 1) 命中（含 HTTP 失败哨兵在短 TTL 内）直接返回对应结果
         cache[key]?.let { entry ->
             if (System.currentTimeMillis() - entry.fetchedAt <= entry.ttlMs) {
-                return entry.value
+                return if (entry.success && entry.value != null) {
+                    FetchResult.Ok(entry.value)
+                } else {
+                    FetchResult.HttpError(-1)
+                }
             }
             // 过期淘汰
             cache.remove(key)
@@ -85,13 +88,13 @@ object GitHubResponseCache {
         // 2) in-flight 去重：已有同 key 请求在飞，等待其结果
         inFlight[key]?.let { return it.await() }
         // 3) 自己发起请求
-        val deferred = CompletableDeferred<String?>()
+        val deferred = CompletableDeferred<FetchResult>()
         inFlight[key] = deferred
         val outcome = try {
             fetch()
         } catch (ce: CancellationException) {
             inFlight.remove(key, deferred)
-            deferred.complete(null)
+            deferred.complete(FetchResult.NetworkError)
             throw ce
         } catch (_: Exception) {
             // fetch 自身未捕获的异常一律按网络异常处理，不写缓存
@@ -104,20 +107,23 @@ object GitHubResponseCache {
                     cache[key] = Entry(outcome.body, System.currentTimeMillis(), success = true, ttlMs = SUCCESS_TTL_MS)
                     evictIfNeeded()
                 }
-                deferred.complete(outcome.body)
             }
             // HTTP 非 2xx：写短 TTL 失败哨兵（null），10 秒后允许重试
             is FetchResult.HttpError -> {
                 cache[key] = Entry(null, System.currentTimeMillis(), success = false, ttlMs = HTTP_FAIL_TTL_MS)
                 evictIfNeeded()
-                deferred.complete(null)
             }
             // 网络异常：不写任何缓存，下次请求立即重发
-            FetchResult.NetworkError -> deferred.complete(null)
+            FetchResult.NetworkError -> Unit
         }
+        deferred.complete(outcome)
         inFlight.remove(key, deferred)
-        return if (outcome is FetchResult.Ok) outcome.body else null
+        return outcome
     }
+
+    /** 便捷包装：只取响应原文，失败/网络异常返回 null（用于无需区分失败原因的调用点） */
+    suspend fun getOrFetch(key: String, maxBytes: Int = 0, fetch: suspend () -> FetchResult): String? =
+        (getOrFetchResult(key, maxBytes, fetch) as? FetchResult.Ok)?.body
 
     /** 删除所有 key 以 [prefix] 开头的条目（下拉刷新绕缓存用） */
     fun invalidatePrefix(prefix: String) {
