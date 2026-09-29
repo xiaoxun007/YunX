@@ -90,17 +90,13 @@ object GitHubLinkParser {
             ?.trimEnd('。', '，', ',', '；', ';', ')', ']', '}', '"', '\'')
             ?: return null
 
-        // 1) 原样优先：\p{Pd} 已覆盖 Unicode 连字符家族，真用特殊连字符命名的仓库原样识别、原样保留。
-        matchRules(rawUrl)?.let { return it }
-
-        // 2) 兜底：原样未命中时（典型场景——微信/豆包复制把 ASCII '-' 污染成 U+2011 等），
-        //    把连字符家族统一转 ASCII '-' 再跑一次规则。此时 owner/repo 已是规范化 ASCII，请求用规范化链接。
-        //    仅对 URL 段做规范化，不动其他字符。
-        val fallbackUrl = normalizeDashesToAscii(rawUrl)
-        if (fallbackUrl != rawUrl) {
-            matchRules(fallbackUrl)?.let { return it }
-        }
-        return null
+        // 实测结论：GitHub 仓库名/用户名**不允许** Unicode dash（带 U+2011 的请求 → HTTP 404，
+        // 转 ASCII '-' 后 → 200），带污染字符的链接全是微信/豆包复制污染，转 ASCII 永远正确、
+        // 不存在"作者真用特殊连字符命名"的场景。因此统一先把连字符家族规范化为 ASCII '-' 再匹配，
+        // 输出给调用方的 owner/repo/url 一律是 ASCII。
+        // 正则字符集保留 \p{Pd} 扩展，仅用于容错识别（即使未规范化的链接也能被认出是 GitHub 链接）。
+        val url = normalizeDashesToAscii(rawUrl)
+        return matchRules(url)
     }
 
     /** 按 DirectFile > Repository > Account 优先级跑全部规则 */
