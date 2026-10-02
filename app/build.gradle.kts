@@ -51,8 +51,9 @@ android {
         // 上游升 1.2.7 后 fork 后缀重计：1.2.7-gh1 = 27（1.2.6-gh19=26 为上一系列末次）；1.2.7-gh2 = 28；1.2.7-gh3 = 29
         // 1.2.7-gh4 = 30：merge 上游 master（#114~#123，M3/更新检测/UI 打磨/镜像接线）
         // 1.2.7-gh5 = 31：修复设置页「GitHub 下载镜像/网络代理」重复条目（merge 残留）
-        versionCode = 31
-        versionName = "1.2.7-gh5"
+        // 1.2.7-gh6 = 32：补回设置条目间缺失间隔；通知点击拉起应用并直达下载页（flags+tab extra）
+        versionCode = 32
+        versionName = "1.2.7-gh6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
