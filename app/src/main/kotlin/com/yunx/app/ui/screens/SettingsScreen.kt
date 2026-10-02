@@ -458,6 +458,8 @@ fun SettingsScreen(
             onClick = onCheckUpdate
         )
 
+        Spacer(modifier = Modifier.height(ListGroupGap))
+
         // GitHub 下载镜像：自定义前缀，留空使用内置默认镜像
         // （merge 前曾存在一份无 shape 的重复条目，已删除；弹窗/状态变量 showMirrorDialog 共用，无影响）
         SettingsItem(
