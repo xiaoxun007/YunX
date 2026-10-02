@@ -19,7 +19,7 @@
 | UI | Jetpack Compose + Material Design 3 |
 | 持久化 | Room（KSP 注解处理）+ SharedPreferences |
 | 网络 | OkHttp 4.12.0 |
-| minSdk / targetSdk / compileSdk | 23 / 34 / 36 |
+| minSdk / targetSdk / compileSdk | 24 / 34 / 36 |
 | JVM target | 17 |
 | 开源协议 | GNU AGPL-3.0 |
 
@@ -196,6 +196,109 @@ manifest 的 minSdk），依据与历史版本对照写在 `gradle/libs.versions
 `@Composable invocations can only happen from the context of a @Composable function`。
 （`AnimatedVisibility` 的 `enter` / `exit` 参数位在 composable 参数位置求值，可直接写。）
 
+### 3.11 minSdk 钉 24（勿降回 23）
+
+`minSdk = 24` 是被 AGP 8.13 的 D8 缺陷逼出来的，不是随手抬的：
+
+- `minSdk < 24` 时 D8 必须脱糖接口的静态方法：它把接口上的 `$default` 桥方法（`RowScope.weight$default`、
+  `DrawScope.drawLine-…$default` 这类）搬进合成的 `Xxx$-CC` 伴生类，**却不改写第三方库（AAR）字节码里的调用点**，
+  调用点仍指向原接口 ⇒ 运行时 `NoSuchMethodError: No static method weight$default(...) in class …RowScope`。
+  实测证据：崩溃包 `classes15.dex` 能 dump 出悬空调用点 `invoke-static/range → RowScope.weight$default`，
+  同时 `classes.dex` 里已生成 `RowScope$-CC`。触发点：mikepenz markdown 渲染 README 表格/引用块
+  （`MarkdownTable.kt:106`、`MarkdownBlockQuote.kt:46`）。
+- **只有未混淆的包会崩**：release 变体开 R8，R8 在 D8 之前就把桥内联掉了（实测 release APK 内
+  `weight$default` / `drawLine-…$default` / `*-CC` 出现 0 次）。所以这个坑只在 debug / CI 包上暴露，
+  与设备系统版本无关（Android 10 上同样崩，因为缺的是 APK 里的方法，不是系统能力）。
+- 24 起系统原生支持接口的静态/默认方法，D8 不再脱糖，调用点天然成立。同类问题 Sentry 也踩到过
+  （AGP 8.13 + `minSdk < 24` 的接口 `$default` 桥，见 getsentry/sentry-java#5302），他们的解法是在自己的
+  调用点上显式传参绕开桥；我们改不了第三方 AAR 的字节码，所以抬 minSdk 是代价最小且确定有效的修法。
+
+**降回 23 的前提**：确认 AGP 已修掉该 D8 脱糖缺陷（换版本后用 debug 包打开带表格的 README，实测不崩）。
+
+### 3.12 文件名显示：统一用 `FileNameText`（别再手写 maxLines）
+
+文件名（含文件夹名）的展示方式由用户设置决定（「主题与外观 → 文件名显示」，`SettingsRepository.fileNameMultiLine`，
+内存态在 `ThemeController`），因此**展示文件名的地方一律用 `ui/components/FileNameText.kt` 的 `FileNameText`**：
+
+```kotlin
+FileNameText(text = file.fname, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+```
+
+- 默认（`fileNameMultiLine = false`）：单行 + `basicMarquee` 跑马灯，与历史观感一致；`true` 时折行显示（最多 3 行）。
+- 已接入：`ShareFileRow`（解析页 + 六个网盘页 + 转存/移动选择器的**唯一行组件**）、
+  六个 `*SaveSheet`/`SaveToCloudSheet` 的文件名头、`CloudFileSheets` 文件详情头、`DownloadScreen` 的任务行/分组行。
+- 不要在各调用处再写 `maxLines` / `overflow` / `basicMarquee`：写死单行会让该设置失效，写死多行则默认观感被改。
+- 面包屑、对话框标题、分享标题（`BookmarkScreen`）**不**走它：它们不是文件名，横向空间紧张时折行会破坏布局。
+
+### 3.13 文件操作弹窗：解析页与网盘页同一套（别再往行里塞图标按钮）
+
+文件/文件夹的操作统一收进底部弹窗，行内不放操作图标（历史遗留的「转存」图标已删除）：
+
+- **解析页**（`ui/resolve/ResolveFileActionSheet.kt`）：点击文件行弹出（下载 / 转存）；文件夹点击是进入目录，
+  用行尾「更多」按钮弹出同一个弹窗（下载文件夹 / 转存）。动作链路：下载 → `checkBaiduLimit` + `fetchDownloadLink`（下载链接弹窗）；
+  下载文件夹 → `ResolveViewModel.downloadFolder`（与批量下载同一条链路 `downloadFiles`，文件夹递归）；
+  转存 → `ResolveViewModel.requestSave`，随后**在同一弹窗内**切到转存步骤（见下条）。
+- **转存是弹窗内的二级步骤，不是第二个弹窗**（与网盘页「移动到」完全同构）：`ResolveFileActionSheet` 内部
+  `private enum class ResolveActionStep { MENU, SAVE }` + `AnimatedContent(fadeIn(effectsDefault()) togetherWith fadeOut(effectsFast()))`；
+  SAVE 内容由 `saveStep: @Composable (onBack, onDone) -> Unit` 插槽提供，返回箭头回主菜单。
+  六个平台的目录选择器是 `ui/screens/*SaveSheet.kt` 里的 `internal fun XxxSaveContent(resolveViewModel, cloudViewModel, onBack)`
+  （`SaveToCloudContent` / `UCSaveContent` / `XunleiSaveContent` / `BaiduSaveContent` / `C139SaveContent` / `Pan123SaveContent`），
+  外壳统一用 `SaveStepScaffold(title, subtitle, onBack, content)`（`CloudFileSheets.kt`，内部就是带返回箭头的 `StepHeader`）——
+  **不要再写 `ModalBottomSheet` + 自绘标题行**。转存成功判定：`ResolveViewModel.saveTarget` 由非空变 null（成功才清空，
+  失败/未登录保留原值让用户重试），`ShareDetailScreen` 用 `LaunchedEffect(saveTarget) { if (saveTarget == null) onDone() }` 关闭整个弹窗；
+  `saving` 期间禁止下滑关闭与返回菜单（避免进度提示随内容一起消失）。
+- **网盘页**（`ui/screens/CloudFileSheets.kt` 的 `FileActionSheet`）：形态同源，多出分享/移动/重命名/删除（自己网盘才有的操作）。
+- 顶部信息头 `FileSheetHeader` 与操作项 `ActionItem` 两个组件为两处共用 —— 改样式只改这两处，**不要再手写一份菜单行**。
+- 过渡：只有「下载 / 下载文件夹」这类**要另开弹窗或直接入队**的动作才先 `sheetState.hide()` 播完退场动画再执行
+  （否则弹窗会瞬间消失，并与紧接着弹出的链接弹窗叠在一起）；同弹窗内的步骤切换（转存）不关弹窗，靠 `AnimatedContent` 淡入淡出。
+- `ShareFileRow` 只剩 `onClick` / `onMore` / `onLongClick`（`onSave` 参数已删）：行尾按钮只用于「点击行为被占用」的场景（文件夹点击进目录）。
+
+### 3.14 主页快捷方式：收藏链接「添加到主页」，标记存 Room 不存设置
+
+收藏页长按 → 「添加到主页」，被添加的收藏以网格出现在**解析页（主页）输入态下方**：
+
+- **数据**：`BookmarkEntity.homePinned: Boolean = false`（Room 列 `homePinned INTEGER NOT NULL DEFAULT 0`，`AppDatabase` 版本 13 → 14，
+  `MIGRATION_13_14` 用 `ALTER TABLE bookmark ADD COLUMN ...`）。**不要用 `SettingsRepository` 存一份 ID 列表** ——
+  置顶状态属于收藏本身，存设置会出现两份状态（删除收藏时残留、顺序无法同步）；Room Flow 天然让收藏页与主页同步刷新。
+  查询/写入走 `BookmarkDao.observeHomePinned()`（`WHERE homePinned = 1 ORDER BY createTime DESC`）与 `updateHomePinned(id, pinned)`，
+  经 `BookmarkViewModel.homeBookmarks`（StateFlow）与 `setHomePinned(id, pinned)` 暴露。
+- **UI**（`ui/screens/ResolveScreen.kt` 的 `HomeShortcutsSection` / `HomeShortcutTile`）：区块在「开始解析」按钮与错误卡片之后，
+  仍在同一个 `verticalScroll` 列里；**不能用 `LazyVerticalGrid`**（外层已纵向滚动，同方向嵌套滚动会崩），
+  用 `bookmarks.chunked(HOME_SHORTCUT_COLUMNS = 4)` 手写行网格，末行补 `Spacer(Modifier.weight(1f))` 保证格子等宽。
+  瓦片 = 48dp 圆角色块 + `FileNameText(maxLines = 2, textAlign = Center)`；
+  色块文字规则**只有一个实现**：`ResolveScreen.kt` 的 `internal fun homeTileLabel(bookmark)` = 自定义文字（`homeLabel`）
+  > `title` 前 `HOME_LABEL_MAX_LENGTH = 4` 个字 > 平台简称（`platformShortLabel`，标题为空时的兜底）；
+  返回空串才退回 `Icons.Outlined.Link` 图标。字号按字数自适应（≤2 字 `titleMedium` / 3 字 `labelLarge` / ≥4 字 `labelSmall`），
+  保证 4 个字在 48dp 方块里放得下（`maxLines = 1` + `TextOverflow.Ellipsis` 兜底大字号）。
+  自定义入口在收藏页长按菜单的「自定义图标文字」（仅 `homePinned` 时显示）：`HomeLabelDialog` 的输入框
+  用 `homeTileLabel(bookmark)` 作 placeholder（复用同一规则，不要另写一份"自动文字"），
+  存 `BookmarkEntity.homeLabel: String = ""`（Room 列 `homeLabel TEXT NOT NULL DEFAULT ''`，版本 14 → 15，`MIGRATION_14_15`），
+  经 `BookmarkDao.updateHomeLabel` / `BookmarkViewModel.setHomeLabel` 写库；空串 = 恢复自动文字。
+  空态给引导卡片（提示去收藏页添加）；标题右侧「管理」直接打开收藏页（`MainScreen` 的 `onOpenBookmarks = { showBookmarks = true }`）。
+- **交互**：点击瓦片 = 直接解析（GitHub 收藏先 `GitHubLinkParser.parse` → `startGitHubResolve`，其余 `startResolve`），
+  并把链接/提取码回填输入框；长按瓦片 → 确认弹窗后 `setHomePinned(id, false)` 移除（防误触）。
+- **收藏页**（`ui/screens/BookmarkScreen.kt`）：长按菜单增加「添加到主页 / 从主页移除」（`onToggleHome`），行内 `homePinned` 时显示「主页」小徽标。
+  `BookmarkScreen.onResolve` 与主页快捷方式都要走 GitHub 分支，GitHub 收藏（`platform = "GITHUB"`，即 `currentPlatform.name`）不能在网盘解析里被吞掉。
+- `FileNameText` 增加了带默认值的 `maxLines` / `textAlign` 参数（既有调用不受影响）：需要多行/居中的场景传参，不要绕开组件自己写 `Text`。
+
+### 3.15 叠加页容器变换（关于云析 / 支持开发 / 主题与外观 / 收藏）：源必须真的被移出组合
+
+`MainScreen.kt` 里四个叠加页共用一套「容器变换」（Container Transform），改这条链路前先读完本节：
+
+- **结构**：`SharedTransitionLayout` → 外层 `Box(背景 surface)` → 源 `AnimatedVisibility(visible = overlayRoute == null)`
+  （主界面）与目标 `AnimatedVisibility(visible = overlayRoute != null)`（`OverlayPage`）。
+  两者**互斥**，不是叠加：实测主界面常驻在下面时，叠加页里的 `Card` 底色会整片画不出来（见 `OverlayPage` KDoc）。
+- **源**：谁被点，谁就是源，用 `Modifier.sharedBounds(rememberSharedContentState(KEY), animatedVisibilityScope = sourceScope)`
+  加在那个元素上，并且**必须在源那侧 `AnimatedVisibility` 的 composable 作用域里构造**（`rememberSharedContentState` 是 `@Composable`）。
+  设置页那三行由 `MainScreen` 建好 modifier 传下去（`SettingsScreen` 的三个 row 参数）；
+  收藏页没有卡片，源就是**解析页顶栏的收藏图标**（`IconButton` 的 `modifier`，key `OVERLAY_KEY_BOOKMARKS`）。
+- **目标**：`OverlayPage(modifier = Modifier.sharedBounds(rememberSharedContentState(route), animatedVisibilityScope = targetScope))`，
+  `route` 取 `shownRoute`（**不是** `overlayRoute`：后者在返回瞬间就变 null，退出动画会没内容可渲染）。
+  新增叠加页时不要再写 `if (route == …) Modifier else …` 这类特例，一律走 sharedBounds。
+- **时长**：目标 `AnimatedVisibility` 的 `exit = fadeOut(tween(300))` 必须 ≥ bounds 形变时长（默认弹簧约 300ms），
+  否则退出一结束内容就被移出组合，回收形变被截断，观感像"没做动画"。
+- CSS 式的"共享元素"在这里就是同一把 key 的两侧修饰符；key 定义在 `MainScreen.kt` 的 `internal const val OVERLAY_KEY_*`。
+
 ---
 
 ## 4. 验证
@@ -232,16 +335,54 @@ manifest 的 minSdk），依据与历史版本对照写在 `gradle/libs.versions
 分片规划：chunkCount = chunkCountFor(total, threads)
           主池 = chunkCount × 0.7   → 文件 part_0 … part_{n-1}（等分区间）
           弹性区 = 剩余 30% 字节     → 文件 seg_{start}_{end}.part（按序领 4MB 块）
-并发 worker = effectiveWorkers（信号量 Semaphore 固定容量，绝不手动 release）
+并发 worker = actualWorkers = min(effectiveWorkers, MAX_INFLIGHT_CHUNKS)
+在飞上限 = inflightLimiter（★ 全进程共享的 Semaphore，跨任务生效，绝不手动 release）
 ```
 
 - worker **循环领片**，慢片不阻塞其他线程 → 根治"尾部并发塌缩"。
 - 弹性区用 `ElasticAllocator` **按字节顺序**分配，替代早期的"中点劈分"（劈分会导致主池耗尽瞬间全部线程涌入、区间跨度翻倍、连接复用率崩塌 → 中后段掉速）。
 
+### 5.1.1 全进程在飞上限（**不要改回「每任务一个信号量」**）
+
+```kotlin
+在飞上限 = inflightLimiter（★ 全进程共享的 Semaphore，跨任务生效，绝不手动 release）
+容量 = MAX_INFLIGHT_CHUNKS = inflightChunksFor(Runtime.getRuntime().maxMemory())
+     = clamp(maxHeap / 8 / BUFFER_SIZE, 8, 512)      // BUFFER_SIZE = 64KB
+并发 worker = actualWorkers = min(effectiveWorkers, MAX_INFLIGHT_CHUNKS)
+分片 IO 线程池 = chunkIoDispatcher（★ 专用线程池，不能退回去用 Dispatchers.IO：它把并行度钉在 max(64, 核数)）
+```
+
+- 旧实现是**每任务一个** `Semaphore(effectiveWorkers)` —— 容量恰等于自己创建的 worker 数，永不阻塞，等于从不限流。
+- **2026-10-01 修正（推翻了「512 线程 × 256KB = 128MB」这个简化归因）**：OOM 的直接机制在 OkHttp 侧 ——
+  客户端声明 `OKHTTP_CLIENT_WINDOW_SIZE = 16MB`（`Http2Connection.kt:114/993`，`Http2Stream.maxByteCount`
+  就取这个值），消费端一慢（写盘慢、限速 `speedLimiter.awaitAllow` 挂起、落盘节流），读线程仍会填满该流
+  readBuffer 的 16MB；几十路 × 16MB 远超 256MB 堆 —— 两份 OOM 报告的栈（`SegmentPool.take` ←
+  `Http2Stream$FramingSource.receive`）正是这里。该控的是**并发流数**与**每路读缓冲**，不是线程数
+  （`log/3/2/` 的两份日志里 60 路连接跑出 3~7MB/s、单连接 50~123KB/s，说明几十路已能打满链路）；
+  同日下载客户端固定 HTTP/1.1（见下一条）后，这条 16MB 的每流窗口已不复存在。
+- **并发真正由 `chunkIoDispatcher` 决定（2026-10-01 起）**：分片 IO **不能**再跑 `Dispatchers.IO` ——
+  它的并行度被钉在 `max(64, 核数)`，超出的 worker 只在队列里干等，于是「设置里 512 线程」永远只跑得出 64 路。
+  现在主池、失败重试的 worker 与 `ChunkDownloader` 内部的 5 处 `withContext` 都走
+  `DownloadManager.chunkIoDispatcher`（`ThreadPoolExecutor(core = max = MAX_INFLIGHT_CHUNKS, 30s, LinkedBlockingQueue)`
+  ＋ `allowCoreThreadTimeOut(true)`，线程名 `yunx-chunk-io`、daemon ⇒ 按需创建、空闲回收）。
+  ★ 必须 core = max：`core = 0` + 无界队列在 ThreadPoolExecutor 里只会养出 1 个 worker（等于退回单流）。
+- **2026-10-01 下载客户端固定 HTTP/1.1**：`HttpClients.buildDownload()` 的
+  `.protocols(...)` 由 `listOf(Protocol.HTTP_2, Protocol.HTTP_1_1)` 改为 `listOf(Protocol.HTTP_1_1)`，
+  从源头去掉上一条的「每流 16MB 应用层接收窗口」——HTTP/1.1 没有流窗口，读多少完全由 TCP 背压决定，
+  堆占用只剩每路 64KB 读缓冲（代价：分片不再多路复用，每路各占一条连接）。是否影响总速**必须实测**：
+  验证办法：需要在 `ChunkDownloader` 里临时打一行 `response.protocol`（或抓包）确认协商到 `http/1.1`，
+  再对比 `runTask:` 的总速；要回退只改那一行为两个协议即可。API 客户端（`buildApi()`）**不设** `protocols`，
+  仍按 OkHttp 默认（h2 优先）——JSON 响应体小，没有流缓冲问题。
+- 主池、弹性区、**失败重试**三条路径都必须走 `inflightLimiter.withPermit` —— 少任何一条，三路并发就会叠加。
+- `threadCount` 仍**原样传给 `chunkCountFor`**：`plan.txt` 签名（`chunks=… total=… main=…`）不能变，否则所有用户的断点续传失效。钳的是 worker 数，不是分片数。
+- 单路读缓冲 `ChunkDownloader.BUFFER_SIZE` = 64KB（原 256KB）；`HttpClients.buildDownload()` 排队上限 `MAX_QUEUED_CALLS = 64`、空闲连接池 8 条 / 1 分钟（原 512 / 64 条 × 5 分钟），并在 `Application.onTrimMemory` 调 `HttpClients.evictIdleConnections()`。
+- 边界由 `InflightChunkBudgetTest` 守住：小堆保底 8 路、大堆封顶 512 路、总缓冲不超过最大堆的 1/8。
+- 设置页档位已恢复到 512（`SettingsRepository.MAX_DOWNLOAD_THREADS = 512`，`threadOptions` 到 512），**上限 512 与档位一致 ⇒ 选 512 就是真的 512 路**：256MB 堆按预算算得 512（`512 × 64KB = 32MB = 堆的 1/8`），FD 实测软限 32768（`/proc/self/limits`，512 路 ≈ 1100 个连接+句柄）。真实值仍见日志 `runTask:` 行的 `actualWorkers`（低内存机型会被堆预算夹到 512 以下）。因为 `chunkCountFor` 在 `threads ≥ 64` 时结果恒等（`want = threads × 8` 已 ≥ 512 硬封顶），`plan.txt` 签名不变，断点续传不受影响。同理，选 512 也可能只是多撞 CDN 的同 IP 限连（`尝试N IO异常`），不一定更快。
+
 ### 5.2 `chunkCountFor` 的真实语义（易被误读）
 
 ```kotlin
-val minChunkBytes = 1 * 1024 * 1024L      // 「单片最小 1MB」= 分片数上限阀，不是"每片就是 1MB"
+val minChunkBytes = 256 * 1024L            // 「单片最小 256KB」= 分片数上限阀，不是"每片就是 256KB"
 val bySize = when {                        // 按文件大小的基础分片数
     total < 5MB -> 1;  total < 50MB -> 8;  total < 500MB -> 32;  else -> 64
 }
@@ -249,7 +390,7 @@ val want = maxOf(bySize, threads * 8)      // 每线程平均 8 片盈余
 return minOf(want, (total / minChunkBytes).toInt(), 512)   // 512 为硬封顶
 ```
 
-**实际单片大小 = `ceil(total / chunkCount)`**，并非固定 1MB——大文件的单片远大于 1MB，线程数越高、分片数封顶后单片越大。
+**实际单片大小 = `ceil(total / chunkCount)`**，并非固定 256KB——大文件的单片远大于 256KB，线程数越高、分片数封顶后单片越大。主池片就是这个大小（`DownloadManager.kt:926` 的 `part_$i`），只有弹性区（后 30%）才用 `ElasticAllocator` 按实测速度动态定块（`clamp(单路速度 × 5s, 256KB, 4MB)`，尾部收缩到 `remaining / workers`、下限 64KB）。
 
 同时注意：分片数还会被 `total / minChunkBytes` 夹住，所以**小文件的分片数（进而实际并发路数）可能低于用户设置的线程数**，这是当前设计为避免碎片化而做的取舍。排查"线程数设置没生效"类问题时先核对这一层。
 
@@ -264,6 +405,49 @@ private const val STAGGER_CAP = 8; STAGGER_MS = 25L  // 错峰建连，平摊 TC
 - 迅雷并发超过约 8 会被降级为 `200` 整文件响应（忽略 Range）→ 整任务回退单流、速度暴跌。
   故 `SettingsRepository.XUNLEI_DOWNLOAD_THREADS = 8` **固定不可改**，`setDownloadThreads` 对迅雷直接 return。
 - 提高任何平台的并发上限前，**必须实测是否触发 200 降级**，"并发越大越快"在网盘 CDN 上不成立。
+
+### 5.3.1 慢连接抢占（治「收尾塌到 KB 级」，**不要删**）
+
+网盘 CDN 是**按连接**限速的，且个别连接会落在慢节点上。真机日志（70.6MB 文件，当时 `YunX-DL` 的诊断输出，日志已删）实测：
+
+```
+runTask 诊断: id=16 在飞=1 used=1/64 剩主池片=0 总速=3.2 KB/s 已下=70.6MB/70.6MB 剩余=25.0KB
+  └ m169 起点=44094960 块大小=256.3KB 已收=231.3KB 瞬时=3.2 KB/s 均速=5.4 KB/s 已跑=42s
+分片结束: id=16 m169 收=256.3KB/256.3KB 耗时=49s 均速=5.2 KB/s
+```
+
+同一时刻其余 61 路早已空转 —— **最后 500KB 拖了 37 秒**。多数连接 40~80KB/s，慢的只有 3~7KB/s，
+说明不是「整站变慢」，而是那几条连接坏了；而慢分片原先会一直跑到死，没有任何换连接的机制。
+
+机制（`DownloadManager` 看门狗 + `ChunkDownloader`）：
+
+```kotlin
+private const val PREEMPT_MIN_BPS = 12 * 1024L      // 绝对下限：低于 12KB/s 才算慢（正常 40~80KB/s）
+private const val PREEMPT_MIN_AGE_MS = 15_000L      // 至少跑 15s 才判（避开建连/TCP 爬坡）
+private const val PREEMPT_COOLDOWN_MS = 10_000L     // 同一分片两次抢占之间的冷却
+private const val PREEMPT_MIN_REMAIN = 128 * 1024L  // 剩余太少就不折腾
+private const val PREEMPT_MAX = 3                   // 单分片最多抢 3 次（全站慢时防重连风暴）
+private const val PREEMPT_PER_TICK = 2              // 每轮（5s）最多抢 2 路
+private const val PREEMPT_ENDGAME_INFLIGHT = 3      // 在飞 ≤3 视为收尾：放宽年龄/剩余门槛
+private const val PREEMPT_ENDGAME_MIN_AGE_MS = 3_000L
+判定阈值 = max(PREEMPT_MIN_BPS, 本任务平均单连接速度 / 2)
+```
+
+- 看门狗 = 每 `PREEMPT_TICK_MS`（5s）的采样协程：`sampleInflightChunks` 刷新每路瞬时速度后交给
+  `preemptSlowChunks` 判定；命中只把 `InflightChunk.preempt` 置位。
+- **收尾放宽**：在飞 ≤ `PREEMPT_ENDGAME_INFLIGHT` 时不再要求「跑满 15s / 剩余 ≥128KB」——只剩几路在磨时，
+  那几路的速度就是用户看到的总速度，重连握手（~0.5s）比继续等便宜得多。
+- `ChunkDownloader.downloadChunk(preempt = …)` 读到置位即 `throw PreemptedException`：**已写字节全部保留**，
+  下一轮从 `partFile.length()` 续传，**不退避、不计失败**（`ChunkResult` 对外仍是三态）。
+- 因此抢占**永远不丢数据、不产生空洞**：`written == expected` 校验与合并前的字节校验照旧。
+- 抢占计数/`抢占慢连接 …` 日志、`sampleInflightChunks` 采样与 `InflightChunk.preempt / preemptCount /
+  lastPreemptAtMs` 都是**永久逻辑**（抢占判定依据）。排查用的临时诊断日志（在飞快照 `runTask 诊断`、
+  `分片结束`、`弹性块分配`/`弹性块结束`、`单流诊断`、`协议诊断`）已于 2026-10-01 删除；
+  **不要因为「日志都删干净了」就把这些字段和采样一起删掉**，否则收尾长尾会回来（见 `PREEMPT_MIN_BPS` 注释）。
+- 2026-10-01 的另两份复现日志（`log/3/2/`）显示同一形态的变体：总速 3~7MB/s 全程正常，
+  但主池慢片 `m34 21s/12.0KB/s`、`m93 18s/13.6KB/s`、`m37 17s/14.6KB/s`、`m128 16s/15.7KB/s`
+  在别的片以 4s/50~60KB/s 完成时还在爬，收尾最后 200~400KB 只剩 1~5 路（`seg@58726398 233.3KB
+  已收=111.3KB 瞬时=18.3KB/s`）→ 正是抢占要处理的对象。
 
 ### 5.4 断点续传与分片计划签名
 
@@ -286,6 +470,23 @@ private const val STAGGER_CAP = 8; STAGGER_MS = 25L  // 错峰建连，平摊 TC
 - `taskLocks` **不在 finally 清理**，否则会误删新任务的锁导致并发写分片。
 - 暂停时以**磁盘 part/seg 真实长度**回写进度，避免恢复时进度回跳。
 - 进度累加一律 `minOf(..., total)` 钳制，防显示"已下载 > 总大小"。
+
+### 5.7 合并阶段进度（别让界面停在 100%）
+
+下载完成后 `finishDownload` 要把所有 `part_i` 顺序写进最终文件；几 GB 的文件这一步要几十秒，
+早期这段时间界面完全不动、通知还挂着最后的下载速度 → 用户以为卡死。现在：
+
+- `ChunkDownloader.mergeChunksToStream(chunkFiles, out, onProgress)` 每写完一个分片回调一次「已合并字节数」。
+- `DownloadManager.finishDownload` 用 `mergeReportIntervalMs = 300L` 节流（百分比没变时）上报：
+  - `_stats.update { it + (id to DownloadStats(mergePercent = percent)) }`；
+  - `DownloadService.update(context, fileName, percent, DownloadService.MERGE_TEXT, showSpeedProvider())`，
+    通知正文因此显示「正在合并分片，完成前请勿关闭应用」（`MERGE_TEXT` 让 `buildNotification` 走合并分支，别把它当速度拼成"下载速度 合并中"）。
+- UI 侧唯一判据是 `DownloadStats.mergePercent`（默认 `-1` = 不在合并）：`DownloadScreen` 主任务行 / 子任务行
+  的进度条与文案切成「合并中 · n%」，文件夹组徽标显示「合并中」。
+
+**为什么不在 DB 里加 `STATUS_MERGING`**：合并是进程内的短暂阶段，进程被杀合并本来就中断（分片还在，恢复即可），
+库里多一个状态只会换来"重启后永远卡在合并中"这种脏数据；同理也不要让 UI 用 `downloadedSize == totalSize` 判断合并（暂停/失败时同样成立）。
+合并期间「暂停」按钮照旧有效：取消协程 → `dest.abort()` 删半成品 → 按磁盘分片长度回写进度变「已暂停」。
 
 ---
 

@@ -57,6 +57,31 @@ class GitHubApi(
         ) : RepoResult
     }
 
+    /** 校验未保存 Token 的结果（保存前先校验，拦住乱填的无效 Token） */
+    sealed interface TokenCheck {
+        data class Valid(val login: String) : TokenCheck
+        data object Invalid : TokenCheck
+        data object Unknown : TokenCheck
+    }
+
+    /**
+     * 携带的 Token 被 GitHub 拒绝（HTTP 401）时回调，只回调一次。
+     *
+     * 为什么必须处理：GitHub 对带**无效** Authorization 头的一切请求都返回 401，
+     * 连公开仓库/Release 解析也会全量失败（不只是限额问题），所以上层要清除这个 Token 才能恢复匿名访问。
+     */
+    var onUnauthorized: (() -> Unit)? = null
+
+    private var unauthorizedNotified = false
+
+    /** 统一检查响应码：401 → 清空缓存（失败条目会短缓存，不清会让「修好之后」仍失败）并通知上层 */
+    private fun noteResponseCode(code: Int) {
+        if (code != 401 || unauthorizedNotified) return
+        unauthorizedNotified = true
+        GitHubResponseCache.clear()
+        onUnauthorized?.invoke()
+    }
+
     /**
      * 获取单个仓库信息：GET /repos/{owner}/{repo}（结果经统一缓存）。
      * 失败原因透传给调用方，用于在 UI 上区分 404/403/网络异常。
@@ -337,6 +362,7 @@ class GitHubApi(
                 client.newCall(buildRequest(url)).execute().use { resp ->
                     val body = if (resp.isSuccessful) resp.body?.string() else null
                     logReq("GET", resp.code, started, withToken, url)
+                    noteResponseCode(resp.code)
                     when {
                         body != null -> GitHubResponseCache.FetchResult.Ok(body)
                         else -> GitHubResponseCache.FetchResult.HttpError(resp.code)
@@ -380,6 +406,34 @@ class GitHubApi(
         } catch (e: Exception) {
             logNetErr("requestJsonArray $url", e); null
         }
+    }
+
+    /**
+     * 校验一个**尚未保存**的 Token：GET /user。
+     *
+     * 不走 [cachedBody]（缓存 key 带 Token 指纹，校验的 Token 还没保存，会与匿名 key 串号）。
+     * 保存前先校验可拦住乱填的 Token —— 无效 Token 会让之后所有 GitHub 请求返回 401。
+     */
+    suspend fun validateToken(token: String): TokenCheck = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url("https://api.github.com/user")
+                .header("User-Agent", "YunX")
+                .header("Accept", "application/vnd.github+json")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    // 401 = Token 无效/已过期/被撤销；其余（403 限流、5xx 等）无法判定有效性
+                    if (resp.code == 401) TokenCheck.Invalid else TokenCheck.Unknown
+                } else {
+                    val login = resp.body?.string()
+                        ?.let { body -> runCatching { JSONObject(body).optString("login") }.getOrNull() }
+                    if (login.isNullOrBlank()) TokenCheck.Unknown else TokenCheck.Valid(login)
+                }
+            }
+        }.getOrElse { TokenCheck.Unknown }
     }
 
     private fun buildRequest(url: String): Request {

@@ -18,6 +18,7 @@
 
 package com.yunx.app.ui.screens
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -118,7 +119,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 可选的下载线程数档位（最高 512） */
+/**
+ * 可选的下载线程数档位（最高 512，与 `SettingsRepository.MAX_DOWNLOAD_THREADS` 一致）。
+ * 真实并发 = min(所选档位, `DownloadManager.MAX_INFLIGHT_CHUNKS`)：后者按最大堆预算推导并封顶 512，
+ * 与本档位上限一致 ⇒ 选 512 就是 512 路（真实值见日志 `runTask:` 行的 actualWorkers）。
+ * 下载客户端已固定 HTTP/1.1，每路只占一条连接 + 64KB 读缓冲（见 Agent.md §5.1.1）；
+ * 但并发越高越容易撞上 CDN 的同 IP 连接数上限与手机链路瓶颈 —— 调高不一定更快，看诊断日志的总速。
+ */
 private val threadOptions = listOf(1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
 
 /** 按平台下载线程数设置项 */
@@ -307,14 +314,22 @@ fun SettingsScreen(
         Spacer(modifier = Modifier.height(ListGroupGap))
 
         // 下载保存目录：系统文件夹选择器（SAF，适配各 Android 版本分区存储）；
-        // 已自定义时卡片右侧内嵌「恢复默认」操作（不单独外露按钮）
+        // 已自定义时卡片右侧内嵌「恢复默认」操作（不单独外露按钮）。
+        // 系统选择器被卸载或禁用时 launch 抛 ActivityNotFoundException（#90）：
+        // 只提示恢复选择器，不改已保存的目录，也不改用其他文件管理器。
         SettingsItem(
             icon = Icons.Outlined.FolderOpen,
             shape = listGroupShape(ListGroupPos.MIDDLE),
             title = "下载保存目录",
             description = downloadDirUri?.let { "已自定义：${DownloadSaver.safDirDisplay(it)}" }
                 ?: "系统默认 Download（点击自定义）",
-            onClick = { dirLauncher.launch(null) },
+            onClick = {
+                try {
+                    dirLauncher.launch(null)
+                } catch (_: ActivityNotFoundException) {
+                    SnackbarController.show("无法打开文件夹选择器，请恢复或启用系统文件选择器后重试")
+                }
+            },
             trailing = if (downloadDirUri != null) {
                 {
                     TextButton(
@@ -460,6 +475,34 @@ fun SettingsScreen(
         // 网络代理：HTTP 代理（Clash/v2ray 等本地代理），未启用时直连
         SettingsItem(
             icon = Icons.Outlined.Security,
+            title = "网络代理",
+            description = if (proxyEnabled && proxyHost.isNotBlank()) {
+                "已启用：$proxyHost:$proxyPort"
+            } else {
+                "未启用（直连）"
+            },
+            onClick = { showProxyDialog = true }
+        )
+
+        Spacer(modifier = Modifier.height(ListGroupGap))
+
+        // GitHub 下载镜像：自定义前缀，留空使用内置默认镜像
+        SettingsItem(
+            icon = Icons.Outlined.Cloud,
+            shape = listGroupShape(ListGroupPos.MIDDLE),
+            title = "GitHub 下载镜像",
+            description = githubMirror?.takeIf { it.isNotBlank() }
+                ?.let { "已自定义：$it" }
+                ?: "默认：${UpdateChecker.MIRROR_PREFIX}",
+            onClick = { showMirrorDialog = true }
+        )
+
+        Spacer(modifier = Modifier.height(ListGroupGap))
+
+        // 网络代理：HTTP 代理（Clash/v2ray 等本地代理），未启用时直连
+        SettingsItem(
+            icon = Icons.Outlined.Security,
+            shape = listGroupShape(ListGroupPos.MIDDLE),
             title = "网络代理",
             description = if (proxyEnabled && proxyHost.isNotBlank()) {
                 "已启用：$proxyHost:$proxyPort"

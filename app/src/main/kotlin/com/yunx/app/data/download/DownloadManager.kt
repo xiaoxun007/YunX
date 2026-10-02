@@ -27,10 +27,12 @@ import com.yunx.app.data.security.AndroidKeystoreCredentialCipher
 import com.yunx.app.data.security.CredentialCipher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -49,6 +51,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -61,7 +66,12 @@ import kotlin.math.min
 data class DownloadStats(
     val speed: Long = 0L,        // 字节/秒
     val remainMillis: Long = -1L, // 剩余时间（毫秒），未知为 -1
-    val chunkCount: Int = 1       // 分片（线程）数
+    val chunkCount: Int = 1,      // 分片（线程）数
+    /**
+     * 分片合并进度（0~100）：-1 表示不在合并阶段。
+     * 合并只活在内存里、不写 DB —— 进程被杀时合并本来就会中断，无需在库里留状态。
+     */
+    val mergePercent: Int = -1
 )
 
 private const val TAG = "YunX-DL"
@@ -74,6 +84,30 @@ private const val RANGE_WORKERS_CAP = 8
 /** 错峰建连上限（序号）：第 i 个分片首次请求前延迟 (min(i, STAGGER_CAP) * STAGGER_MS) */
 private const val STAGGER_CAP = 8
 private const val STAGGER_MS = 25L
+
+/** 慢连接抢占的采样间隔：看门狗每隔这么久刷新一次每路瞬时速度，再据此判定是否换连接 */
+private const val PREEMPT_TICK_MS = 5_000L
+
+// ---------- ★ 慢连接抢占（治「收尾塌到 KB 级」，勿删）----------
+// 网盘 CDN 是**按连接**限速的，且个别连接会落在慢节点上：真机日志（70.6MB 文件）实测多数连接
+// 40~80KB/s，少数只有 3~7KB/s。慢分片如果正好是收尾时唯一在跑的那几路，总速就塌到 KB 级
+// （日志实测：64 路里 61 路空转 37 秒，只为等最后 500KB）。抢占 = 断开这条慢连接、换一条新连接续传。
+/** 判定「慢连接」的绝对下限：低于 12KB/s 才算慢（实测正常连接 40~80KB/s） */
+private const val PREEMPT_MIN_BPS = 12 * 1024L
+/** 分片至少跑这么久才允许被抢占（避开建连与 TCP 爬坡期，否则会误杀刚起步的正常分片） */
+private const val PREEMPT_MIN_AGE_MS = 15_000L
+/** 同一分片两次抢占之间的冷却期（换完连接要给新连接爬坡时间，避免反复重连） */
+private const val PREEMPT_COOLDOWN_MS = 10_000L
+/** 剩余不足这个数就不再折腾（换连接本身也有握手成本） */
+private const val PREEMPT_MIN_REMAIN = 128 * 1024L
+/** 单个分片最多被抢占几次：全局都慢时（如整站限速）避免无意义的重连风暴 */
+private const val PREEMPT_MAX = 3
+/** 每轮看门狗最多抢占几路，避免同一时刻大批连接同时重建 */
+private const val PREEMPT_PER_TICK = 2
+/** 收尾判定：在飞分片不超过这个数就认为「其余连接已无事可做」，放宽抢占门槛（真机日志：收尾只剩 1~3 路在磨） */
+private const val PREEMPT_ENDGAME_INFLIGHT = 3
+/** 收尾时的最小存活时间：比常规门槛短得多，但也要避开刚建连的爬坡期 */
+private const val PREEMPT_ENDGAME_MIN_AGE_MS = 3_000L
 
 /** RANGE_IGNORED 容忍次数：CDN 偶发 200（限流中间态）前 N 次不触发整任务回退，继续领新片；超过才回退单流 */
 private const val RANGE_IGNORED_TOLERANCE = 3
@@ -152,6 +186,36 @@ private class ElasticAllocator(
 }
 
 /**
+ * 一个在飞分片的采样状态（慢连接抢占的判定依据，**永久结构，勿删**）。
+ *
+ * 累加已收字节（每个读块一次 `AtomicLong.addAndGet`，开销可忽略）、记住起点/块大小，供看门狗协程
+ * 每 PREEMPT_TICK_MS 刷新一次瞬时速度（[lastBps]）；[preempt] / [preemptCount] / [lastPreemptAtMs]
+ * 决定该路是否换连接续传——删掉它们收尾长尾就会回来（见 PREEMPT_MIN_BPS 注释）。
+ */
+private class InflightChunk(val start: Long, val size: Long) {
+    val bytes = AtomicLong(0L)
+    val startedAtMs = System.currentTimeMillis()
+
+    /** 上一次快照时的字节数与时刻（只由看门狗协程读写） */
+    var lastBytes = 0L
+    var lastAtMs = startedAtMs
+
+    /** 本次快照算出的瞬时速度（只由看门狗协程读写） */
+    var lastBps = 0L
+
+    /** ★ 慢连接抢占标志：置位后 ChunkDownloader 断开当前连接、换新连接从已收字节续传（不丢数据） */
+    val preempt = AtomicBoolean(false)
+
+    /** 本分片已被抢占次数（上限 PREEMPT_MAX） */
+    var preemptCount = 0
+
+    /** 上次被抢占的时刻（冷却期用） */
+    var lastPreemptAtMs = 0L
+
+    val elapsedMs: Long get() = System.currentTimeMillis() - startedAtMs
+}
+
+/**
  * 下载任务管理器：
  * - 任务持久化（Room），状态流转 PENDING → DOWNLOADING → COMPLETED / PAUSED / FAILED；
  * - 分片多线程下载（每片一个协程，信号量限并发）；
@@ -187,6 +251,23 @@ class DownloadManager(
     private val speedLimiter = SpeedLimiter()
 
     /**
+     * ★ 全进程在飞分片信号量（跨任务共享）。
+     *   这里钉的是「同时在飞的下载请求数」，而不是设置里的线程数：分片 IO 都是**同步阻塞**的
+     *   `call.execute()`，设置写 512 也只是「允许 512 路同时下」，真正的闸门是这道信号量
+     *   （容量 [MAX_INFLIGHT_CHUNKS]，按最大堆预算推导、封顶 512）。
+     *   OOM（见 log/oom）的历史机制在 OkHttp 侧：HTTP/2 客户端对外声明 **每流 16MB** 窗口
+     *   （`OKHTTP_CLIENT_WINDOW_SIZE`），消费端一慢（写盘慢、限速挂起、落盘节流），读线程仍会把数据
+     *   填进该流 readBuffer 直到 16MB 用完 —— 几十路叠加就能撑满 256MB 堆，两份 OOM 报告的栈正好
+     *   落在 `Http2Stream$FramingSource.receive` / okio `SegmentPool` 上。现已从源头拆掉：
+     *   ① 下载客户端固定 HTTP/1.1（无应用层流窗口，读多少由 TCP 背压决定，见 HttpClients.buildDownload）；
+     *   ② 每路读缓冲 64KB（原本 256KB，[ChunkDownloader.BUFFER_SIZE]）；
+     *   ③ 在飞路数由本信号量钉住：512 路 × 64KB = 32MB，占 256MB 堆的 1/8（FD 实测软限 32768，1100 个连接+句柄远未用满）；
+     *   ④ 分片 IO 走专用线程池 `chunkIoDispatcher`（不再受 `Dispatchers.IO` 的 `max(64, 核数)` 限制）。
+     *   ★ 绝不手动 release；也不要改回「每任务一个信号量」。
+     */
+    private val inflightLimiter = Semaphore(MAX_INFLIGHT_CHUNKS)
+
+    /**
      * 保存前存储权限检查（Android 9- 写公共 Download 需 WRITE_EXTERNAL_STORAGE 运行时授权）。
      * UI 层注入：无权限时动态申请并等待授权结果；已授权/Android 10+ 直接返回 true。
      * 授权后会自动继续保存（同一协程 await 授权结果再往下走）。
@@ -207,11 +288,23 @@ class DownloadManager(
     private val notifyThrottleMs = 2000L
     private val lastNotifyTs = AtomicLong(0)
 
+    /** 合并阶段进度上报节流（毫秒）：分片合并回调很密，百分比不变时最多这么久报一次 */
+    private val mergeReportIntervalMs = 300L
+
     /** 更新前台通知进度（2 秒节流；total<=0 时不确定进度，只更新标题；可显示下载速度） */
     private fun notifyProgress(id: Long, fileName: String, new: Long, total: Long) {
         val now = System.currentTimeMillis()
         if (now - lastNotifyTs.get() >= notifyThrottleMs) {
             lastNotifyTs.set(now)
+            // ★ 内存观测（复用同一条 2 秒节流，无额外开销）：已用堆超 3/4 时打一行，
+            //   让「日志导出」带上 OOM 前的堆时间线，事后不依赖 HPROF 也能看出趋势
+            val rt = Runtime.getRuntime()
+            val used = rt.totalMemory() - rt.freeMemory()
+            if (used * 4 > rt.maxMemory() * 3) {
+                Log.w(TAG, "内存高压 used=${used / 1024 / 1024}MB max=${rt.maxMemory() / 1024 / 1024}MB " +
+                    "tasks=${_stats.value.size} inflightCap=$MAX_INFLIGHT_CHUNKS " +
+                    "inflightUsed=${MAX_INFLIGHT_CHUNKS - inflightLimiter.availablePermits}")
+            }
             val percent = if (total > 0) ((new * 100 / total).toInt().coerceIn(0, 100)) else -1
             val speed = _stats.value[id]?.speed ?: 0L
             val speedText = if (speed > 0) formatSpeed(speed) else ""
@@ -229,6 +322,76 @@ class DownloadManager(
             i++
         }
         return String.format("%.1f %s", value, units[i])
+    }
+
+    /**
+     * 刷新每路在飞分片的瞬时速度（抢占判定的依据，不产生日志）。
+     *
+     * 每个采样周期调一次：`lastBps = 本周期新增字节 / 本周期耗时`，随后由 [preemptSlowChunks]
+     * 挑出「远低于同伴」的那几路换连接续传。真实速度必须来自窗口差值（累计均速看不出刚变慢的连接）。
+     */
+    private fun sampleInflightChunks(diag: Map<String, InflightChunk>) {
+        val now = System.currentTimeMillis()
+        for (d in diag.values) {
+            val bytes = d.bytes.get()
+            d.lastBps = (bytes - d.lastBytes).coerceAtLeast(0L) * 1000 / (now - d.lastAtMs).coerceAtLeast(1L)
+            d.lastBytes = bytes
+            d.lastAtMs = now
+        }
+    }
+
+    /**
+     * ★ 慢连接抢占（永久逻辑）：把「跑得远低于同伴」的在飞分片换到新连接上续传。
+     *
+     * 判定阈值 = max(绝对下限 PREEMPT_MIN_BPS, 本任务平均单连接速度 / 2)：
+     * 用相对值是为了适配不同 CDN 的限速档次（夸克单连接几十 KB/s、迅雷更低），绝对下限兜住
+     * 「收尾只剩一两路、平均值被自己拉低」的退化情况。命中后只把 [InflightChunk.preempt] 置位，
+     * 由 ChunkDownloader 断开连接并从已收字节续传——不丢数据、不退避、不改变对外结果。
+     *
+     * 每轮最多抢 PREEMPT_PER_TICK 路、单路最多 PREEMPT_MAX 次，避免全局慢时变成重连风暴。
+     * 收尾（在飞 ≤ PREEMPT_ENDGAME_INFLIGHT）时放宽年龄/剩余两条门槛——真机日志里最后几百 KB
+     * 常常只剩 1~3 路在磨，那几路的瞬时速度就是用户看到的「掉到 KB 级」。
+     */
+    private fun preemptSlowChunks(
+        id: Long,
+        downloaded: Long,
+        elapsedMs: Long,
+        workers: Int,
+        diag: Map<String, InflightChunk>
+    ) {
+        if (diag.isEmpty()) return
+        val avgPerConn = if (elapsedMs > 0 && workers > 0) downloaded * 1000 / elapsedMs / workers else 0L
+        val floor = maxOf(PREEMPT_MIN_BPS, avgPerConn / 2)
+        val now = System.currentTimeMillis()
+        var taken = 0
+        for (d in diag.values.sortedBy { it.lastBps }) {
+            if (taken >= PREEMPT_PER_TICK) break
+            if (d.preemptCount >= PREEMPT_MAX) continue
+            if (now - d.lastPreemptAtMs < PREEMPT_COOLDOWN_MS) continue
+            // 收尾（在飞 ≤ PREEMPT_ENDGAME_INFLIGHT）时放宽「跑够久」和「剩余够多」两条门槛：
+            // 此时其余连接已经没活干，再等下去毫无意义，重连握手（~0.5s）远比慢连接磨完剩余字节便宜。
+            if (diag.size <= PREEMPT_ENDGAME_INFLIGHT) {
+                if (d.elapsedMs < PREEMPT_ENDGAME_MIN_AGE_MS) continue
+            } else {
+                if (d.elapsedMs < PREEMPT_MIN_AGE_MS) continue
+                if (d.size - d.bytes.get() < PREEMPT_MIN_REMAIN) continue
+            }
+            if (d.lastBps >= floor) continue
+            d.preemptCount++
+            d.lastPreemptAtMs = now
+            d.preempt.set(true)
+            taken++
+            Log.w(TAG, "runTask: id=$id 抢占慢连接 起点=${d.start} 块=${diagSize(d.size)} 已收=${diagSize(d.bytes.get())} " +
+                "瞬时=${formatSpeed(d.lastBps)} 阈值=${formatSpeed(floor)} 第${d.preemptCount}/$PREEMPT_MAX 次（换连接续传）")
+        }
+    }
+
+    /** 字节数转可读文本（抢占日志用） */
+    private fun diagSize(bytes: Long): String = when {
+        bytes >= 1024L * 1024 * 1024 -> String.format("%.2fGB", bytes / 1073741824.0)
+        bytes >= 1024L * 1024 -> String.format("%.1fMB", bytes / 1048576.0)
+        bytes >= 1024L -> String.format("%.1fKB", bytes / 1024.0)
+        else -> "${bytes}B"
     }
 
     /**
@@ -380,9 +543,15 @@ class DownloadManager(
                     _stats.update { it - id }
                     // 协程已被取消（暂停/删除）：不标记失败，避免覆盖 PAUSED 状态
                     if (isTaskActive()) {
-                        Log.e(TAG, "task $id failed: ${e.message ?: e.javaClass.simpleName}", e)
+                        val reason = e.message ?: e.javaClass.simpleName
+                        Log.e(TAG, "task $id failed: $reason", e)
                         dao.updateStatus(id, DownloadTaskEntity.STATUS_FAILED)
-                        dao.updateError(id, e.message ?: e.javaClass.simpleName)
+                        dao.updateError(id, reason)
+                        // 终态通知：失败同样先出流体云胶囊，随后转为可划掉的普通通知
+                        DownloadService.notifyResult(
+                            context, id, dao.get(id)?.fileName ?: "下载任务",
+                            success = false, error = reason, promote = showSpeedProvider()
+                        )
                     } else {
                         Log.w(TAG, "task $id cancelled: ${e.message}")
                     }
@@ -656,10 +825,17 @@ class DownloadManager(
         } else {
             threadCount.coerceAtLeast(1)
         }
-        Log.d(TAG, "分片规划: id=$id chunks=$chunkCount main=$mainPoolCount elasticStart=$elasticStart size=$chunkSize threads=$threadCount effectiveWorkers=$effectiveWorkers isXunlei=$isXunlei")
+        // ★ 实际 worker 再钳一道「全进程在飞上限」（设置页档位已同步收到 64，这里是兜底）：
+        //   真实并行度受 Dispatchers.IO（默认 64）与内存预算约束，超出的 worker 只会排队等
+        //   信号量、白白多占协程与排队 Call；钳掉后吞吐不变（分片盈余仍由任务池 + 弹性区提供）。
+        //   注意：threadCount 仍原样传给 chunkCountFor —— plan.txt 签名不能变，否则断点续传失效。
+        val actualWorkers = min(effectiveWorkers, MAX_INFLIGHT_CHUNKS)
+        Log.d(TAG, "分片规划: id=$id chunks=$chunkCount main=$mainPoolCount elasticStart=$elasticStart " +
+            "size=$chunkSize threads=$threadCount effectiveWorkers=$effectiveWorkers " +
+            "actualWorkers=$actualWorkers inflightCap=$MAX_INFLIGHT_CHUNKS isXunlei=$isXunlei")
 
-        // 注册实时统计：线程数 = 有效并发（受安全上限约束）
-        _stats.update { it + (id to DownloadStats(0L, -1L, effectiveWorkers)) }
+        // 注册实时统计：线程数 = 实际并发（受安全上限与内存预算约束）
+        _stats.update { it + (id to DownloadStats(0L, -1L, actualWorkers)) }
 
         // 统计已有 part/seg 大小（断点续传起点；主池 + 弹性区均按磁盘真实长度）
         val downloaded = AtomicLong(0)
@@ -688,7 +864,7 @@ class DownloadManager(
         // ★ 弹性区分配器（IDM 式动态分片）：按字节顺序发块、区间物理相邻，替代中点劈分（根治中后段掉速）。
         //   续传：不完整 seg 删除重下；完整 seg 前缀推进 nextStart（弹性区按序分配，完成块天然是字节前缀）。
         //   块大小随实时速度自适应并尾部收缩，保证全部连接忙到最后一块，消除"末尾只剩少数大块 → 拖尾特别慢"。
-        val elasticAllocator = ElasticAllocator(total, elasticStart, effectiveWorkers, chunkSize)
+        val elasticAllocator = ElasticAllocator(total, elasticStart, actualWorkers, chunkSize)
         if (elasticStart < total) {
             // 不完整 seg 删除（重下）
             chunkDir.listFiles { f -> f.name.startsWith("seg_") && f.name.endsWith(".part") }?.forEach { f ->
@@ -712,13 +888,14 @@ class DownloadManager(
             elasticAllocator.skipTo(resumeNext)
         }
         val elasticResults = ConcurrentHashMap<String, ChunkResult>()
-
-        // ★ 固定容量信号量：容量 = effectiveWorkers，绝不手动 release，杜绝溢出崩溃
-        val sem = Semaphore(effectiveWorkers)
+        // 在飞分片表（key = m<片号> / seg@<起点> / retry@<起点>）：仅供看门狗算瞬时速度与抢占判定
+        val inflightChunks = ConcurrentHashMap<String, InflightChunk>()
 
         val allOk = coroutineScope {
-            val workers = List(effectiveWorkers) {
-                async(Dispatchers.IO) {
+            // ★ worker 数已钳到 actualWorkers；在飞槽位由全进程共享的 inflightLimiter 控制
+            //   （见字段注释：绝不手动 release，也不要改回「每任务一个信号量」）
+            val workers = List(actualWorkers) {
+                async(chunkIoDispatcher) {
                     // 阶段 1：主池循环领取
                     while (true) {
                         if (fallback.get()) break
@@ -726,16 +903,22 @@ class DownloadManager(
                         if (i >= mainPoolCount) break
                         // 错峰建连：首请求前按序号微延迟，平摊 TCP/TLS 突发（仅影响首请求，不影响稳态并发）
                         if (i > 0) delay(min(i.toLong(), STAGGER_CAP.toLong()) * STAGGER_MS)
-                        sem.withPermit {
+                        inflightLimiter.withPermit {
                             if (fallback.get()) return@withPermit
                             val start = i * chunkSize
                             val end = min(start + chunkSize - 1, total - 1)
+                            // 登记在飞分片（key=m<片号>）：看门狗据此算单路瞬时速度、判定慢连接抢占
+                            val diagKey = "m${i + 1}"
+                            val diag = InflightChunk(start, end - start + 1)
+                            inflightChunks[diagKey] = diag
                             val res = try {
                                 downloader.downloadChunk(
                                     taskId = id, url = task.url, start = start, end = end,
-                                    partFile = File(chunkDir, "part_$i"), headers = headers
+                                    partFile = File(chunkDir, "part_$i"), headers = headers,
+                                    preempt = diag.preempt
                                 ) { bytes ->
                                     speedLimiter.awaitAllow(bytes)
+                                    diag.bytes.addAndGet(bytes)   // 采样：供看门狗算瞬时速度
                                     // ★ 钳制到 total：任何竞态都不可能让显示超过总大小
                                     val new = minOf(downloaded.addAndGet(bytes), total)
                                     if (!isTaskActive()) return@downloadChunk
@@ -743,7 +926,7 @@ class DownloadManager(
                                         // ★ 实时速度注入弹性分配器：块大小随真实吞吐自适应（IDM 式动态分片）
                                         elasticAllocator.recentSpeedBps = speed
                                         val remain = if (speed > 0) (total - new) * 1000 / speed else -1L
-                                        _stats.update { it + (id to DownloadStats(speed, remain, effectiveWorkers)) }
+                                        _stats.update { it + (id to DownloadStats(speed, remain, actualWorkers)) }
                                     }
                                     notifyProgress(id, task.fileName, new, total)
                                     persistProgressIfDue(id, new, total, force = false, lastAt = lastPersistAt)
@@ -753,6 +936,8 @@ class DownloadManager(
                             } catch (e: Exception) {
                                 failReason.compareAndSet(null, "分片 ${i + 1}/$mainPoolCount：${e.message ?: e.javaClass.simpleName}")
                                 ChunkResult.FAILED
+                            } finally {
+                                inflightChunks.remove(diagKey)
                             }
                             results[i] = res
                             when (res) {
@@ -774,14 +959,20 @@ class DownloadManager(
                         val s = range.first
                         val e = range.last
                         val key = "${s}_${e}"
+                        // 登记在飞弹性块（key=seg@<起点>）：看门狗据此算单路瞬时速度、判定慢连接抢占
+                        val diagKey = "seg@$s"
+                        val diag = InflightChunk(s, e - s + 1)
+                        inflightChunks[diagKey] = diag
                         val res = try {
-                            sem.withPermit {
+                            inflightLimiter.withPermit {
                                 if (fallback.get()) return@withPermit ChunkResult.FAILED
                                 downloader.downloadChunk(
                                     taskId = id, url = task.url, start = s, end = e,
-                                    partFile = File(chunkDir, "seg_$key.part"), headers = headers
+                                    partFile = File(chunkDir, "seg_$key.part"), headers = headers,
+                                    preempt = diag.preempt
                                 ) { bytes ->
                                     speedLimiter.awaitAllow(bytes)
+                                    diag.bytes.addAndGet(bytes)   // 采样：供看门狗算瞬时速度
                                     // ★ 钳制到 total：任何竞态都不可能让显示超过总大小
                                     val new = minOf(downloaded.addAndGet(bytes), total)
                                     if (!isTaskActive()) return@downloadChunk
@@ -789,7 +980,7 @@ class DownloadManager(
                                         // ★ 实时速度注入弹性分配器：块大小随真实吞吐自适应（IDM 式动态分片）
                                         elasticAllocator.recentSpeedBps = speed
                                         val remain = if (speed > 0) (total - new) * 1000 / speed else -1L
-                                        _stats.update { it + (id to DownloadStats(speed, remain, effectiveWorkers)) }
+                                        _stats.update { it + (id to DownloadStats(speed, remain, actualWorkers)) }
                                     }
                                     notifyProgress(id, task.fileName, new, total)
                                     persistProgressIfDue(id, new, total, force = false, lastAt = lastPersistAt)
@@ -799,6 +990,8 @@ class DownloadManager(
                             throw e
                         } catch (e: Exception) {
                             ChunkResult.FAILED
+                        } finally {
+                            inflightChunks.remove(diagKey)
                         }
                         elasticResults[key] = res
                         when (res) {
@@ -813,7 +1006,18 @@ class DownloadManager(
                     }
                 }
             }
+            // 看门狗：周期刷新每路瞬时速度，并判定是否把慢连接换掉（worker 全部跑完即停）
+            val preemptJob = launch(Dispatchers.IO) {
+                val runStartMs = System.currentTimeMillis()
+                while (true) {
+                    delay(PREEMPT_TICK_MS)
+                    // ★ 慢连接抢占（永久逻辑，勿删）：先刷新瞬时速度，再以本任务的平均单连接速度为参照
+                    sampleInflightChunks(inflightChunks)
+                    preemptSlowChunks(id, downloaded.get(), System.currentTimeMillis() - runStartMs, actualWorkers, inflightChunks)
+                }
+            }
             workers.awaitAll()
+            preemptJob.cancel()
             !fallback.get() && results.all { it == ChunkResult.OK } &&
                 elasticResults.values.all { it == ChunkResult.OK }
         }
@@ -846,29 +1050,41 @@ class DownloadManager(
             val retryOk = if (missing.isEmpty()) true else coroutineScope {
                 val retryIdx = AtomicInteger(0)
                 val retryResults = arrayOfNulls<ChunkResult?>(missing.size)
-                val retryWorkers = List(min(effectiveWorkers, missing.size)) {
-                    async(Dispatchers.IO) {
+                val retryWorkers = List(min(actualWorkers, missing.size)) {
+                    async(chunkIoDispatcher) {
                         while (true) {
                             if (!isTaskActive()) break
                             val pos = retryIdx.getAndIncrement()
                             if (pos >= missing.size) break
                             val m = missing[pos]
+                            // 重试区间同样登记：重试期间的慢连接也会被看门狗采样、抢占
+                            val diagKey = "retry@${m.start}"
+                            val diag = InflightChunk(m.start, m.end - m.start + 1)
+                            inflightChunks[diagKey] = diag
                             val res = try {
-                                downloader.downloadChunk(
-                                    taskId = id, url = task.url, start = m.start, end = m.end,
-                                    partFile = m.file, headers = headers
-                                ) { bytes ->
-                                    speedLimiter.awaitAllow(bytes)
-                                    // ★ 钳制到 total：任何竞态都不可能让显示超过总大小
-                                    val new = minOf(downloaded.addAndGet(bytes), total)
-                                    if (!isTaskActive()) return@downloadChunk
-                                    dao.updateProgress(id, DownloadTaskEntity.STATUS_DOWNLOADING, new, total)
-                                    notifyProgress(id, task.fileName, new, total)
+                                // ★ 重试同样走全进程在飞信号量：少这一处会让「主池 + 弹性区 + 重试」
+                                //   三路并发叠加，正是 OOM 的成因之一
+                                inflightLimiter.withPermit {
+                                    downloader.downloadChunk(
+                                        taskId = id, url = task.url, start = m.start, end = m.end,
+                                        partFile = m.file, headers = headers,
+                                        preempt = diag.preempt
+                                    ) { bytes ->
+                                        speedLimiter.awaitAllow(bytes)
+                                        diag.bytes.addAndGet(bytes)   // 采样：供看门狗算瞬时速度
+                                        // ★ 钳制到 total：任何竞态都不可能让显示超过总大小
+                                        val new = minOf(downloaded.addAndGet(bytes), total)
+                                        if (!isTaskActive()) return@downloadChunk
+                                        dao.updateProgress(id, DownloadTaskEntity.STATUS_DOWNLOADING, new, total)
+                                        notifyProgress(id, task.fileName, new, total)
+                                    }
                                 }
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: Exception) {
                                 ChunkResult.FAILED
+                            } finally {
+                                inflightChunks.remove(diagKey)
                             }
                             retryResults[pos] = res
                             if (res != ChunkResult.OK) {
@@ -1010,6 +1226,10 @@ class DownloadManager(
         val hlsTotal = dao.get(id)?.totalSize ?: 0L
         completeWithAvg(id, savedPath, hlsTotal)
         Log.d(TAG, "hlsDownload: id=$id 下载完成 savedPath=$savedPath size=${hlsFile.length()}")
+        // 终态通知：完成后流体云先显示「下载完成」胶囊，随后转为可划掉的普通通知
+        DownloadService.notifyResult(
+            context, id, task.fileName, success = true, promote = showSpeedProvider()
+        )
         taskCallbacks.remove(id)?.let { cb -> runCatching { cb() } }
         _stats.update { it - id }
         hlsFile.delete()
@@ -1046,12 +1266,37 @@ class DownloadManager(
         // 3) 流式写入最终位置（自定义目录经 SAF；默认目录走 MediaStore/传统路径）
         // ★ 同步阻塞写入必须切 IO 线程：任务跑在 Dispatchers.Default（CPU 池），
         //   大文件写盘若占满 Default 线程会让整个下载器协程饿死（"100% 卡死保存不了"）
+        // 合并阶段单独上报进度（界面/通知显示「合并中 n%」）：大文件合并要几十秒，
+        // 一直停在 100% 不动会让用户以为卡死。进度只走内存态 stats、不写 DB ——
+        // 进程被杀时合并本就中断，库里不需要再多一个会卡住的状态。
+        val mergeTotal = if (total > 0) total else chunkFiles.sumOf { it.length() }
+        var mergeLastPercent = -1
+        var mergeLastAtMs = 0L
+        fun reportMergeProgress(done: Long) {
+            if (mergeTotal <= 0) return
+            val percent = (done * 100 / mergeTotal).toInt().coerceIn(0, 100)
+            val now = System.currentTimeMillis()
+            if (percent == mergeLastPercent && now - mergeLastAtMs < mergeReportIntervalMs) return
+            mergeLastPercent = percent
+            mergeLastAtMs = now
+            _stats.update { it + (id to DownloadStats(mergePercent = percent)) }
+            // 通知沿用下载中那条 2 秒节流（合并回调很密，别把系统通知刷爆）
+            if (now - lastNotifyTs.get() >= notifyThrottleMs) {
+                lastNotifyTs.set(now)
+                DownloadService.update(
+                    context, fileName, percent, DownloadService.MERGE_TEXT, showSpeedProvider()
+                )
+            }
+        }
+        reportMergeProgress(0L)
         val savedPath = withContext(Dispatchers.IO) {
             val dest = DownloadSaver.openDestination(context, fileName, saveDirProvider())
                 ?: throw IllegalStateException("无法创建下载目标（下载目录不可用）")
             try {
                 val out = dest.open() ?: throw IllegalStateException("无法打开下载目标输出流")
-                val written = out.use { downloader.mergeChunksToStream(chunkFiles, it) }
+                val written = out.use {
+                    downloader.mergeChunksToStream(chunkFiles, it, ::reportMergeProgress)
+                }
                 if (total > 0 && written != total) {
                     throw IllegalStateException("文件大小校验失败：期望 $total 字节，实际 $written 字节（已拒绝保存损坏文件）")
                 }
@@ -1065,6 +1310,10 @@ class DownloadManager(
         }
         completeWithAvg(id, savedPath, total)
         Log.d(TAG, "finishDownload: id=$id 下载完成 savedPath=$savedPath size=$total")
+        // 终态通知：完成后流体云先显示「下载完成」胶囊，随后转为可划掉的普通通知
+        DownloadService.notifyResult(
+            context, id, fileName, success = true, promote = showSpeedProvider()
+        )
         taskCallbacks.remove(id)?.let { cb ->
             runCatching { cb() }
         }
@@ -1167,5 +1416,63 @@ class DownloadManager(
         // 任务池：每线程平均领 8 片，天然抗慢片拖尾（比 1:1 映射多 8 倍盈余）
         val want = maxOf(bySize, threads * 8)
         return minOf(want, (total / minChunkBytes).toInt().coerceAtLeast(1), 512)
+    }
+
+    companion object {
+        /**
+         * 读缓冲预算占最大堆的比例：取 1/8（256MB 堆 → 32MB 预算）。
+         * 原来是 1/16：下载客户端改用 HTTP/1.1 之后，每路在飞只占一份 64KB 读缓冲
+         * （不再有 HTTP/2 那条 16MB 每流窗口），同样的堆预算可以安全地多放一倍路数。
+         */
+        private const val BUFFER_BUDGET_DIVISOR = 8
+
+        /** 在飞分片下限：低于 8 路会让慢 CDN 明显掉速 */
+        private const val INFLIGHT_MIN = 8
+
+        /**
+         * 在飞分片硬上限：512（与设置页最高档位一致 ⇒ 用户选 512 就是真的 512 路）。
+         * 为什么敢放到 512：每路在飞 ≈ 一条 HTTP/1.1 连接 + 一个分片文件句柄（约 2 个 FD），
+         * 512 路 ≈ 1100 个 FD —— 本机实测进程 FD 软限是 32768（`/proc/self/limits`），远未用满。
+         * 内存侧 512 × 64KB 读缓冲 = 32MB，正好是 256MB 堆的 1/8（[BUFFER_BUDGET_DIVISOR] 的预算）。
+         * 仍然要注意：线程是**按需创建**的（没人用 512 档位就不会有那么多线程），
+         * 但路数越高越可能撞上 CDN 对同 IP 的连接数上限，表现为 429/连接重置
+         * （日志里 `尝试N IO异常`），那时该往下调档位，而不是继续加。
+         */
+        private const val INFLIGHT_MAX = 512
+
+        /**
+         * 按堆预算推导「全进程在飞分片上限」：maxHeap / 8 / 单路读缓冲大小，夹在 [8, 512]。
+         * 纯函数（无副作用），便于单测覆盖边界（见 InflightChunkBudgetTest）。
+         */
+        internal fun inflightChunksFor(maxHeapBytes: Long, bufferSize: Int = BUFFER_SIZE): Int =
+            (maxHeapBytes / BUFFER_BUDGET_DIVISOR / bufferSize.coerceAtLeast(1))
+                .toInt()
+                .coerceIn(INFLIGHT_MIN, INFLIGHT_MAX)
+
+        /**
+         * 全进程在飞分片上限（进程启动时按最大堆算一次）。
+         * 由 `inflightLimiter` 用作信号量容量：无论用户怎么调线程数、同时开几个任务，
+         * 同时在飞的下载请求数都不会超过它 —— 这是 OOM（见 log/oom）的根治手段。
+         */
+        val MAX_INFLIGHT_CHUNKS: Int = inflightChunksFor(Runtime.getRuntime().maxMemory())
+
+        /**
+         * 分片阻塞 IO 的专用线程池（进程级），worker 与 [ChunkDownloader] 内部的 `withContext` 都跑在它上面。
+         *
+         * 为什么不能直接用 `Dispatchers.IO`：它的并行度被钉在 `max(64, 核数)`，超出的 worker 只能在队列里
+         * 干等 —— 于是「设置里 256/512 线程」永远只跑得出 64 路。线程**按需创建**（最多 [MAX_INFLIGHT_CHUNKS]
+         * 条）、空闲 30 秒回收，只有真用到大并发时才会存在那么多线程。
+         * 必须 core = max 而不是 core = 0 + 无界队列：后者在 ThreadPoolExecutor 里只会养出 1 个 worker。
+         */
+        internal val chunkIoDispatcher: CoroutineDispatcher =
+            ThreadPoolExecutor(
+                MAX_INFLIGHT_CHUNKS,
+                MAX_INFLIGHT_CHUNKS,
+                30L,
+                TimeUnit.SECONDS,
+                LinkedBlockingQueue<Runnable>()
+            ) { r -> Thread(r, "yunx-chunk-io").apply { isDaemon = true } }
+                .apply { allowCoreThreadTimeOut(true) }
+                .asCoroutineDispatcher()
     }
 }

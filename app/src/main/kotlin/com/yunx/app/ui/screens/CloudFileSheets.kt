@@ -94,6 +94,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.ui.SnackbarController
+import com.yunx.app.ui.components.FileNameText
 import com.yunx.app.ui.rememberGlobalSnackbarHostState
 import com.yunx.app.ui.resolve.BackToParentItem
 import com.yunx.app.ui.resolve.CrumbBar
@@ -109,7 +110,7 @@ import com.yunx.app.ui.theme.spatialDefault
 import com.yunx.app.ui.theme.spatialFast
 
 /** 文件操作菜单类型（FileActionSheet 内切换） */
-private enum class ActionStep { MENU, MOVE, SHARE, RENAME }
+private enum class ActionStep { MENU, MOVE, SHARE, RENAME, DELETE }
 
 /** 有效期选项：名称 + expired_type 值 */
 private val expireOptions = listOf(
@@ -119,16 +120,6 @@ private val expireOptions = listOf(
     "30 天" to 4
 )
 
-/**
- * 文件操作底部弹窗（**六大网盘页共用**）：单弹窗多步骤 —— 菜单 → 移动 / 分享 / 重命名，
- * 每一步都有返回键（[StepHeader]）与步骤切换过渡，与原夸克弹窗的形态一致。
- *
- * 平台差异通过参数注入，不需要各平台再各写一个弹窗：
- * - 分享表单的提交走 [onShare]（各平台 shareFile 参数不同，由调用方适配；139 不支持自定义提取码，
- *   按平台传 [PasscodeMode]）
- * - 移动步骤走 [moveStep] 插槽（各平台的目录浏览状态类型不同，无法共享）
- * - 删除只回调 [onDelete]，由页面弹共享的 [ConfirmDeleteSheet]（全项目唯一的删除确认实现）
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun FileActionSheet(
@@ -138,7 +129,8 @@ internal fun FileActionSheet(
     onDownloadFolder: () -> Unit,
     onShare: (withPassword: Boolean, passcode: String, expiredType: Int) -> Unit,
     onRename: (String) -> Unit,
-    onDelete: () -> Unit,
+    /** 确认删除后执行（页面的 deleteFile()）：确认步骤在本弹窗内部完成 */
+    onConfirmDelete: () -> Unit,
     onDismiss: () -> Unit,
     /** 提取码规则（各平台不同，见 [PasscodeMode]） */
     passcodeMode: PasscodeMode = PasscodeMode.OPTIONAL,
@@ -179,10 +171,9 @@ internal fun FileActionSheet(
                     onShare = { step = ActionStep.SHARE },
                     onMove = { step = ActionStep.MOVE },
                     onRename = { step = ActionStep.RENAME },
-                    onDelete = {
-                        onDelete()
-                        onDismiss()
-                    }
+                    // 删除是弹窗内的第二级步骤：这样过渡与分享/重命名完全一致，也不会像另开底部弹窗那样
+                    // 让本弹窗瞬间消失（页面的确认目标是从 actionFile 推导的，关掉它会把 actionFile 清空）
+                    onDelete = { step = ActionStep.DELETE }
                 )
 
                 ActionStep.MOVE -> moveStep({ step = ActionStep.MENU }, onDismiss)
@@ -203,7 +194,55 @@ internal fun FileActionSheet(
                     onDone = onDismiss,
                     onRename = onRename
                 )
+
+                // 删除确认：与批量删除共用同一份确认 UI，取消则退回菜单
+                ActionStep.DELETE -> ConfirmDeleteContent(
+                    target = "「${file.fname}」",
+                    operating = operating,
+                    onCancel = { step = ActionStep.MENU },
+                    onConfirm = {
+                        onConfirmDelete()
+                        onDismiss()
+                    }
+                )
             }
+        }
+    }
+}
+
+/**
+ * 底部弹窗顶部：图标 + 文件名 + 类型（文件夹/文件）。
+ * 网盘页文件操作弹窗（[FileActionSheet]）与解析页文件操作弹窗
+ * （`com.yunx.app.ui.resolve.ResolveFileActionSheet`）共用，保证两处形态一致。
+ */
+@Composable
+internal fun FileSheetHeader(file: ShareFile) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Surface(
+            modifier = Modifier.size(40.dp),
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.primaryContainer
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = if (file.isdir) Icons.Outlined.Folder else Icons.Outlined.Download,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            FileNameText(
+                text = file.fname,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = if (file.isdir) "文件夹" else "文件",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -225,35 +264,7 @@ private fun ActionMenu(
             .padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp)
     ) {
         // 标题
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(
-                modifier = Modifier.size(40.dp),
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.primaryContainer
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = if (file.isdir) Icons.Outlined.Folder else Icons.Outlined.Download,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = file.fname,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1
-                )
-                Text(
-                    text = if (file.isdir) "文件夹" else "文件",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
+        FileSheetHeader(file = file)
 
         Spacer(modifier = Modifier.height(16.dp))
         HorizontalDivider()
@@ -301,16 +312,19 @@ private fun ActionMenu(
         ActionItem(
             icon = Icons.Outlined.Delete,
             title = "删除",
-            desc = "移入回收站",
+            desc = "删除网盘文件",
             tint = MaterialTheme.colorScheme.error,
             onClick = onDelete
         )
     }
 }
 
-/** 操作项行 */
+/**
+ * 操作项行（图标 + 标题 + 说明）。
+ * 网盘页与解析页的文件操作弹窗共用，新增操作项请沿用本组件，不要再手写一份。
+ */
 @Composable
-private fun ActionItem(
+internal fun ActionItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     desc: String,
@@ -683,11 +697,65 @@ private fun RenameStep(
 }
 
 /**
- * 删除确认底部弹窗（**全项目唯一的删除确认实现**）。
+ * 删除确认内容（**全项目唯一的删除确认实现**）。
  *
- * 六大网盘页的每一条删除路径都走这里：单文件删除、多选批量删除、操作菜单里的删除。
+ * 两处承载：网盘页单文件删除把它当作 [FileActionSheet] 的第二级步骤
+ * （与分享/重命名同一套切换过渡），多选批量删除则包在 [ConfirmDeleteSheet] 这个独立底部弹窗里。
+ *
+ * @param target 删除对象描述，如「文件名.mp4」或 "选中的 3 项"
+ */
+@Composable
+private fun ConfirmDeleteContent(
+    target: String,
+    operating: Boolean,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp)
+    ) {
+        Text("删除文件", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "确定要删除$target 吗？",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(20.dp))
+        Button(
+            onClick = onConfirm,
+            enabled = !operating,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+        ) {
+            Text("删除")
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        TextButton(
+            onClick = onCancel,
+            enabled = !operating,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+        ) {
+            Text("取消")
+        }
+    }
+}
+
+/**
+ * 删除确认底部弹窗：多选批量删除等**没有可复用的父弹窗**的入口用它
+ * （单文件删除已改为 [FileActionSheet] 内部的 [ActionStep.DELETE] 步骤，过渡与分享/重命名一致）。
+ *
  * 原先是 6 份 AlertDialog（其中夸克的两份还"弹在底部弹窗之上"），形态与层叠都不一致；
- * 现统一为底部弹窗 —— 自带滑入/淡出过渡，且不会出现"弹窗套弹窗"。
+ * 现统一为底部弹窗 + 共用 [ConfirmDeleteContent] —— 自带滑入/淡出过渡，且不会出现"弹窗套弹窗"。
  *
  * @param target 删除对象描述，如「文件名.mp4」或 "选中的 3 项"
  */
@@ -707,46 +775,15 @@ internal fun ConfirmDeleteSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp)
-        ) {
-            Text("删除文件", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = "确定要删除$target 吗？删除后将移入回收站。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(20.dp))
-            Button(
-                onClick = {
-                    onConfirm()
-                    onDismiss()
-                },
-                enabled = !operating,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = MaterialTheme.colorScheme.onError
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-            ) {
-                Text("删除")
+        ConfirmDeleteContent(
+            target = target,
+            operating = operating,
+            onCancel = onDismiss,
+            onConfirm = {
+                onConfirm()
+                onDismiss()
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            TextButton(
-                onClick = onDismiss,
-                enabled = !operating,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-            ) {
-                Text("取消")
-            }
-        }
+        )
     }
 }
 
@@ -823,10 +860,15 @@ internal fun ShareResultDialog(
     )
 }
 
-/** 步骤头部：返回按钮 + 标题（六大网盘页的移动步骤也用它，故为 internal） */
+/** 步骤头部：返回按钮 + 标题 + 副标题（六大网盘页的移动步骤与解析页转存步骤都用它，故为 internal） */
 @Composable
-internal fun StepHeader(title: String, subtitle: String, onBack: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+internal fun StepHeader(
+    title: String,
+    subtitle: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) {
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -840,13 +882,38 @@ internal fun StepHeader(title: String, subtitle: String, onBack: () -> Unit) {
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium
             )
-            Text(
+            // 副标题是文件名（单文件传文件名，批量传"已选 N 项"）→ 走 FileNameText，跟随文件名显示设置
+            FileNameText(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/**
+ * 「转存」步骤外框（解析页文件操作弹窗内的二级步骤）。
+ *
+ * 六大平台的转存目录选择器（`XxxSaveContent`）共用：顶部是带返回箭头的 [StepHeader]，
+ * 下面直接放各自的内容（内容自带 24dp 内边距），因此切换步骤时只有内容淡入淡出，
+ * 不会像另开一个 [androidx.compose.material3.ModalBottomSheet] 那样整块弹窗重新升起。
+ */
+@Composable
+internal fun SaveStepScaffold(
+    title: String,
+    subtitle: String,
+    onBack: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        StepHeader(
+            title = title,
+            subtitle = subtitle,
+            onBack = onBack,
+            modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 4.dp)
+        )
+        content()
     }
 }
 
@@ -1003,7 +1070,7 @@ private fun BatchMenu(
         ActionItem(
             icon = Icons.Outlined.Delete,
             title = "删除",
-            desc = "批量移入回收站",
+            desc = "批量删除网盘文件",
             tint = MaterialTheme.colorScheme.error,
             onClick = onDelete
         )

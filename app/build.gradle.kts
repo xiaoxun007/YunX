@@ -41,12 +41,17 @@ android {
 
     defaultConfig {
         applicationId = "com.yunx.app"
-        minSdk = 23
+        // minSdk 24：AGP 8.13 的 D8 在 minSdk < 24 时必须脱糖接口静态方法，它把接口的 $default 桥方法
+        // （如 RowScope.weight$default）搬进 $-CC 伴生类，却不改写第三方库字节码里的调用点，
+        // 未混淆（debug）的包渲染 README 表格时必崩 NoSuchMethodError；24 起系统原生支持，不再脱糖。
+        // 原因与实测证据见 Agent.md §3.11，勿降回 23。
+        minSdk = 24
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
         // 上游升 1.2.7 后 fork 后缀重计：1.2.7-gh1 = 27（1.2.6-gh19=26 为上一系列末次）；1.2.7-gh2 = 28；1.2.7-gh3 = 29
-        versionCode = 29
-        versionName = "1.2.7-gh3"
+        // 1.2.7-gh4 = 30：merge 上游 master（#114~#123，M3/更新检测/UI 打磨/镜像接线）
+        versionCode = 30
+        versionName = "1.2.7-gh4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -74,8 +79,9 @@ android {
         debug {
             signingConfig = signingConfigs.getByName("debug")
         }
-        // Release 变体：R8 代码混淆 + 资源压缩瘦身；用固定 release 签名（见上），跨版本可覆盖安装。
-        // 注意：R8 可能误删反射/序列化类，已在 proguard-rules.pro 补 Room 等 keep 规则。
+        // Release 变体：R8 代码混淆 + 资源压缩瘦身（未使用的代码/资源裁剪）；
+        // 用固定 release 签名（见上），跨版本可覆盖安装。
+        // R8 可能误删反射/序列化类，已在 proguard-rules.pro 补 Room 等 keep 规则。
         getByName("release") {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -118,7 +124,7 @@ dependencies {
     implementation(libs.room.ktx)          // 提供协程扩展，如 Flow、suspend
     ksp(libs.room.compiler)
 
-    // GFM Markdown 渲染（README 富文本）
+    // GitHub README 的 GFM 渲染（表格/嵌套列表/代码高亮/折叠/图片）
     implementation(libs.markdownRenderer)
 
     implementation(libs.androidx.core.ktx)
@@ -130,6 +136,11 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     testImplementation("junit:junit:4.13.2")
+    // 设置页目录选择器仪器测试：runner / JUnit 集成；Compose 测试库版本对齐现有 BOM
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
