@@ -57,13 +57,6 @@ class GitHubApi(
         ) : RepoResult
     }
 
-    /** 校验未保存 Token 的结果（保存前先校验，拦住乱填的无效 Token） */
-    sealed interface TokenCheck {
-        data class Valid(val login: String) : TokenCheck
-        data object Invalid : TokenCheck
-        data object Unknown : TokenCheck
-    }
-
     /**
      * 携带的 Token 被 GitHub 拒绝（HTTP 401）时回调，只回调一次。
      *
@@ -78,7 +71,7 @@ class GitHubApi(
     private fun noteResponseCode(code: Int) {
         if (code != 401 || unauthorizedNotified) return
         unauthorizedNotified = true
-        GitHubResponseCache.clear()
+        GitHubResponseCache.invalidatePrefix("")
         onUnauthorized?.invoke()
     }
 
@@ -449,4 +442,11 @@ class GitHubApi(
         }
         return builder.build()
     }
+}
+
+/** 校验未保存 Token 的结果（保存前先校验，拦住乱填的无效 Token）。顶层声明，便于 UI 直接 import。 */
+sealed class TokenCheck {
+    data class Valid(val login: String) : TokenCheck()
+    data object Invalid : TokenCheck()
+    data object Unknown : TokenCheck()
 }
