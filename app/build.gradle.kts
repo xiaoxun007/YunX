@@ -50,8 +50,9 @@ android {
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
         // 上游升 1.2.7 后 fork 后缀重计：1.2.7-gh1 = 27（1.2.6-gh19=26 为上一系列末次）；1.2.7-gh2 = 28；1.2.7-gh3 = 29
         // 1.2.7-gh4 = 30：merge 上游 master（#114~#123，M3/更新检测/UI 打磨/镜像接线）
-        versionCode = 30
-        versionName = "1.2.7-gh4"
+        // 1.2.7-gh5 = 31：修复设置页「GitHub 下载镜像/网络代理」重复条目（merge 残留）
+        versionCode = 31
+        versionName = "1.2.7-gh5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
