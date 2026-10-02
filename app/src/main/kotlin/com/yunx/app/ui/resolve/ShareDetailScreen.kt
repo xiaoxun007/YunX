@@ -730,7 +730,6 @@ internal fun ShareFileRow(
                         // weight(fill = false)：先给徽章留出位置，文件名再占满剩余宽度（短名不拉伸）
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    )
                     if (badge != null) {
                         Spacer(modifier = Modifier.width(6.dp))
                         badge()
