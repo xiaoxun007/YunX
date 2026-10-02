@@ -54,6 +54,24 @@ class MainActivity : ComponentActivity() {
     // 通知被系统/用户关闭时（任意版本，含国产 ROM 默认关闭），启动后弹窗引导去系统设置开启
     private var showNotificationGuide by mutableStateOf(false)
 
+    // 通知点击带来的「直达下载页」信号：每次带 open_tab=download 的 Intent 拉起就 +1。
+    // MainScreen 用 LaunchedEffect 监听该值并切到 Download Tab；0 表示无请求，正常启动行为不变。
+    private var openDownloadSignal by mutableStateOf(0)
+
+    /** 检查 Intent 是否带「直达下载页」extra；带则递增信号（onCreate/onNewIntent 共用）。 */
+    private fun consumeOpenTabFromIntent(intent: Intent?) {
+        if (intent?.getStringExtra("open_tab") == "download") {
+            openDownloadSignal += 1
+        }
+    }
+
+    // 应用已在栈顶运行时被通知 Intent 再次拉起（SINGLE_TOP）：会走这里而不是新建 Activity。
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeOpenTabFromIntent(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // 应用内主题设置：始终深色/浅色时提前切换窗口主题，避免冷启动闪错背景色
         // （values-night 只跟随系统；应用内「始终深色」但系统浅色时，需显式使用深色窗口主题）
@@ -66,6 +84,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestNotificationPermissionIfNeeded()
+        // 首次启动也读 Intent extra：通知冷启动拉起时直达下载页
+        consumeOpenTabFromIntent(intent)
         runCatching {
             val hits = ArchiveProbe.fast(this).toMutableList()
             if (entryMismatch(this)) hits.add(4)
@@ -75,7 +95,7 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             ComposeEmptyActivityTheme {
-                MainScreen()
+                MainScreen(openDownloadSignal = openDownloadSignal)
                 SafetyNoticeDialog()
                 // 通知被禁用引导（Android 13+ 授权后仍被关 / 低版本被系统或用户关闭）
                 if (showNotificationGuide) {

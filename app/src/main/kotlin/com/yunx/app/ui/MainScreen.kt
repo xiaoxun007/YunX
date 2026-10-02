@@ -189,8 +189,17 @@ internal const val OVERLAY_KEY_BOOKMARKS = "overlay-bookmarks"
     ExperimentalSharedTransitionApi::class
 )
 @Composable
-fun MainScreen() {
+fun MainScreen(
+    // 通知点击「直达下载页」信号：>0 表示需要切到 Download Tab（0 = 无请求，正常启动）。
+    // 由 MainActivity 在 onCreate/onNewIntent 读到 open_tab=download 时递增传入。
+    openDownloadSignal: Int = 0
+) {
     var currentTab by rememberSaveable { mutableStateOf(MainTab.Resolve) }
+
+    // 通知拉起时切到下载页：信号 >0 触发一次；初始 0 不影响默认 Resolve Tab。
+    LaunchedEffect(openDownloadSignal) {
+        if (openDownloadSignal > 0) currentTab = MainTab.Download
+    }
     var showQuarkLogin by rememberSaveable { mutableStateOf(false) }
     var showUCLogin by rememberSaveable { mutableStateOf(false) }
     var showXunleiLogin by rememberSaveable { mutableStateOf(false) }

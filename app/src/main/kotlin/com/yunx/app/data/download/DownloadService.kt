@@ -81,8 +81,17 @@ class DownloadService : Service() {
     }
 
     private fun buildNotification(title: String, progress: Int, speed: String, showSpeed: Boolean): Notification {
+        // 通知点击拉起 MainActivity：
+        // - NEW_TASK/CLEAR_TOP/SINGLE_TOP 三个 flags 修小米 HyperOS 后台/被杀后点进度通知不跳转；
+        // - putExtra("open_tab","download") 让 MainActivity 启动后自动切到「下载」Tab。
+        val notifyIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("open_tab", "download")
+        }
         val contentIntent = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+            this, 0, notifyIntent, PendingIntent.FLAG_IMMUTABLE
         )
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
@@ -222,8 +231,15 @@ class DownloadService : Service() {
             error: String,
             linger: Boolean
         ): Notification {
+            // 结果通知同样带 flags + open_tab extra：点击后直达下载页
+            val notifyIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra("open_tab", "download")
+            }
             val contentIntent = PendingIntent.getActivity(
-                context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                context, 0, notifyIntent, PendingIntent.FLAG_IMMUTABLE
             )
             val title = if (success) "下载完成" else "下载失败"
             val text = if (success) fileName else if (error.isBlank()) fileName else "$fileName：$error"
