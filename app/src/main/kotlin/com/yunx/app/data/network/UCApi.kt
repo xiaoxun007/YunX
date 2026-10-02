@@ -675,8 +675,9 @@ suspend fun getDownloadLink(fid: String, cookie: String): DownloadLink? = withCo
             parseData(request) { data -> data.optString("task_id").takeIf { it.isNotBlank() } }
         }
 
-    /** 创建分享（抓包：POST /1/clouddrive/share，url_type 1=无提取码 2=带提取码，expired_type 1永久/2一天/3七天/4三十天）。
- * 注意：分享创建是**异步任务**——响应只有 data.task_id，必须轮询 /1/clouddrive/task 直到完成拿到 share_id。 */
+    /** 创建分享（抓包：POST /1/clouddrive/share，url_type 1=无提取码 2=带提取码，
+     *  expired_type 1永久/2一天/3七天/4三十天，**取值域与 UI 中性码一致**（[com.yunx.app.data.network.model.ShareExpire]），无需转换，Agent.md §3.20；调用方只能传 1..4）。
+     *  注意：分享创建是**异步任务**——响应只有 data.task_id，必须轮询 /1/clouddrive/task 直到完成拿到 share_id。 */
     suspend fun createShare(
         fidList: List<String>,
         title: String,
@@ -763,9 +764,12 @@ suspend fun getDownloadLink(fid: String, cookie: String): DownloadLink? = withCo
             it.body?.string() ?: throw QuarkApiException("请求失败：响应为空")
         }
         val json = runCatching { JSONObject(body) }.getOrElse {
-            throw QuarkApiException("响应解析失败")
+            // 服务端返回非 JSON（多半是 HTML 错误页/风控页）时带上 HTTP 状态码，
+            // 便于分辨「未登录被拒（401/403）」与「分享已失效」
+            throw QuarkApiException("响应解析失败（HTTP ${response.code}）")
         }
         if (json.optInt("status") != 200) {
+            // 透传服务端 message，如「提取码错误」「分享已失效」等
             throw QuarkApiException(json.optString("message").ifBlank { "请求失败" })
         }
         return parser(json.optJSONObject("data") ?: throw QuarkApiException("响应缺少 data"))

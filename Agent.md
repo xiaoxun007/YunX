@@ -299,6 +299,156 @@ FileNameText(text = file.fname, style = MaterialTheme.typography.bodyLarge, font
   否则退出一结束内容就被移出组合，回收形变被截断，观感像"没做动画"。
 - CSS 式的"共享元素"在这里就是同一把 key 的两侧修饰符；key 定义在 `MainScreen.kt` 的 `internal const val OVERLAY_KEY_*`。
 
+### 3.16 深色模式字体发黑：全屏页必须有 `Surface`（`LocalContentColor` 默认是黑色）
+
+**症状**：深色模式下个别文字仍是黑色（历史案例：引导页第 1 页「云析」、第 2 页「使用前请阅读」）。
+**根因**：`LocalContentColor` 的默认值是 `Color.Black`，**只有 `Surface` / `Scaffold`（以及 Button、Card 这类自绘容器）才会把它设成
+`contentColorFor(底色)`**（如 `surface → onSurface`）。页面只要不在这些容器里，`Text` 不写 `color` 就是黑字 ——
+浅色模式看不出来，深色模式立刻暴露。
+
+**本项目的雷区**（都是「手动铺底色」、绕开了 Scaffold 的地方）：
+- `ui/screens/OnboardingScreen.kt`：`MainScreen.kt` 里 `if (showOnboarding) { OnboardingScreen(...); return }` 的提前返回全屏覆盖页；
+  已用 `Surface(modifier = modifier.fillMaxSize(), color = colorScheme.surface)` 包住整页（底色与 `BlobBackground` 的 base 一致，观感不变），
+  第 1 页「云析」与第 2 页「使用前请阅读」另外显式写了 `color = colorScheme.onSurface`。
+- `ui/MainScreen.kt` 的**横屏分支**：手动 `Row(NavigationRail + 内容)`，原先只有 `Box.background(background)`；
+  同样已换成 `Surface(color = colorScheme.background)` 包住内容与 Snackbar（此前横屏 + 深色模式下，列表里没写 color 的文件名会是黑字）。
+- 其它页面（登录页 / 关于 / 支持 / 主题 / 收藏 / 各 Tab 页）都有 `Scaffold`，或本身就是 `AlertDialog` / `ModalBottomSheet`（自带 Surface），不受影响。
+
+**约定**：
+1. 新增「全屏覆盖页 / 手动布局页」时用 `Surface` 铺底，不要用 `Modifier.background(...)`；确实只能用 `background` 时，页内每个 `Text` 都要显式给 `color`。
+2. 深色模式自查重点看**大标题**这类没写 `color` 的文本（最容易漏）。
+3. 排查手段：`grep -rn "Color(0x\|Color.White\|Color.Black" app/src/main/kotlin/com/yunx/app`（正常只应命中 `ui/theme/Color.kt` 的方案令牌）。
+
+---
+
+### 3.17 权限申请统一收口在引导页第 3 页（**别再往业务页面加"每次启动都弹"的检查**）
+
+**现状**：引导页第 3 页（`ui/screens/OnboardingPermissionPage.kt` 的 `PermissionPage(storageGranted, storageDenied, onRequestStorage)`）一次性过三件事：
+| 卡片 | 权限/设置 | 可申请的系统版本 | 入口 |
+| --- | --- | --- | --- |
+| 通知权限 | `POST_NOTIFICATIONS` | Android 13+ 可申请；低版本/被系统关闭 → 跳系统设置 | `PermissionState.canRequestNotifications()` → 申请，否则 `openNotificationSettings()` |
+| 后台运行 | 「忽略电池优化」白名单 | 全版本（系统设置页） | `PermissionState.requestIgnoreBatteryOptimizations()` |
+| 存储权限 | `WRITE_EXTERNAL_STORAGE` | **仅 Android 9 及以下**需要；10+ 走媒体库无需授权 | `PermissionState.storagePermissionRequired()` |
+
+**能否跳过**：通知与后台运行可跳过（只影响提醒 / 息屏存活）；**存储权限在 Android 9 及以下是必要权限，不给跳过** ——
+没有它 `DownloadManager` 会在保存前直接抛「未授予存储权限，无法保存到下载目录」（`data/download/DownloadManager.kt` 的 HLS 分支与分片合并分支各一处），
+所以存储权限状态提升在 `ui/screens/OnboardingScreen.kt`（`storageGranted` / `storageDenied` / `requestStorage` / `storageBlocking`）：
+未授权时底部 `OnboardingBottomBar(finishEnabled = !storageBlocking, ...)` 把「开始使用」按钮**置灰禁用**（`Button(enabled = false)`），
+**文案与图标恒为「开始使用」+ Check，不随状态改字**（用户明确要求：改文案会让人以为按钮变成了别的东西）；
+授权入口是权限页的「存储权限」卡片，授权成功返回后 `ON_RESUME` 重查 ⇒ 按钮自动恢复可点。
+卡片按钮在拒绝过一次后由「授权」改成「去设置授权」并走 `PermissionState.openAppDetails()`
+（避免授权框已被「不再询问」吞掉、点了没反应）。Android 10+ 的 `storageGranted()` 恒为 true ⇒ 这套阻塞逻辑完全不生效。
+
+**卡片按钮显示规则**：`PermissionCard` 内部只要 `granted == true` 就不渲染操作按钮 ——「去设置」只在真的需要用户动手时才出现，别在调用处补 `if`。
+
+**唯一状态入口**：`app/src/main/kotlin/com/yunx/app/util/PermissionState.kt`。
+`Build.VERSION.SDK_INT` 的分支只允许写在这个文件里（13+ 的运行时通知权限、9- 的存储权限、各系统设置 Intent 的兜底跳转都在里面），调用处不要再自己判断版本。
+
+**已从业务页面移除**（历史行为，勿恢复）：
+- `MainActivity.kt`：启动时的通知权限申请 + 「通知权限」引导弹窗（`notificationPermLauncher` / `showNotificationGuide` / `NotificationPermissionDialog`）。
+- `ui/MainScreen.kt`：首次下载任务启动时弹的「保持后台下载」电池优化 `AlertDialog`（`showBatteryGuide` / 监听 `downloadViewModel.tasks` 的 `LaunchedEffect`）。
+
+**保留的兜底**（有意为之，不冲突：只有用户真的用到该功能且权限缺失时才提示）：
+- `ui/MainScreen.kt` 的 `storagePermissionLauncher` + `downloadManager.storagePermissionProvider`（保存前兜底，Android 9- 才真会弹）。
+- `ui/screens/DownloadScreen.kt`：手动添加下载任务入口的存储权限兜底。
+- `ui/screens/SupportScreen.kt`：保存图片时的存储权限兜底。
+- `ui/screens/SettingsScreen.kt`：通知状态展示与手动申请、「通知栏下载进度」开关点击时申请、电池优化手动入口（设置页是用户主动去改的地方，不算打扰）。
+
+**注意**：权限授权框和系统设置页返回都会触发 `ON_RESUME`，所以引导页第 3 页的卡片状态用 `DisposableEffect(lifecycleOwner)` + `LifecycleEventObserver` 重查，
+不能只用 `remember { mutableStateOf(...) }` 的初值（否则会出现"授权完返回，卡片还显示未授权"）。
+
+---
+
+### 3.18 发布签名：CI 用 GitHub Secrets，本地构建未签名（**别把证书提交进仓库**）
+
+**证书在哪**：仓库 Settings → Secrets and variables → Actions 的四个 Secrets ——
+`KEYSTORE_BASE64`（.jks 的 base64 文本）、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`。
+
+**Gradle 侧**（`app/build.gradle.kts` 顶部）：读四个环境变量
+（`YUNX_KEYSTORE_FILE` / `YUNX_KEYSTORE_PASSWORD` / `YUNX_KEY_ALIAS` / `YUNX_KEY_PASSWORD`），
+**四项齐备且证书文件真实存在**才 `create("release")` 注册签名配置；否则 release 的 `signingConfig = null`
+⇒ 产物叫 `app-release-unsigned.apk`。
+所以本地与 `ci.yml` 不带变量构建时，`assembleRelease` 照样成功，只是不签名；本地想出自签名包，自己导出这四个变量再构建。
+`debug` 变体不受影响，仍用仓库里的 `debug.keystore`。
+
+**CI 侧**（`.github/workflows/build-apk.yml` nightly）：构建前多一步 `Restore release keystore` ——
+把 `secrets.KEYSTORE_BASE64` 解码到 `$RUNNER_TEMP/yunx-release.jks`、用 `keytool -list` 预校验口令与别名、
+把路径写进 `$GITHUB_ENV` 的 `YUNX_KEYSTORE_FILE`；口令/别名/密钥口令只注入 `Build release APK` 那一步。
+构建后用 `apksigner verify --print-certs` 自检产物确实带正式证书 —— **签名没生效就让 CI 红，而不是发出一堆装不上的包**。
+`ci.yml` 故意不注入这些变量：它只做编译校验，上传的也只有 debug 包。
+
+**装包注意**：
+- 换签名后，之前用 debug 签名装的包（含旧 nightly）与正式签名**互不兼容**，必须先卸载再装，否则 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。
+- nightly 与正式版同签名 ⇒ 可直接覆盖安装升级（这也是给测试者的便利）。
+- `.gitignore` 已挡 `*.jks` / `*.keystore` / `keystore.properties`（`!debug.keystore` 例外）。
+- 生成 `KEYSTORE_BASE64`：Linux/macOS `base64 -w 0 你的.jks`（macOS 若报 `-w` 不支持就用 `base64 -i 你的.jks`），Windows PowerShell `[Convert]::ToBase64String([IO.File]::ReadAllBytes("你的.jks"))`。
+
+### 3.19 游客模式：列目录不要求登录，下载/转存仍要求登录（**别再往列目录加登录拦截**）
+
+**结论**：解析分享**不再要求登录**。6 个网盘的分享**列表**接口都允许匿名访问（用户实测：浏览器未登录也能列出文件）；
+但**取直链/转存**基本都要账号，所以登录闸门只保留在下载/转存入口。
+
+**各平台列目录的匿名能力（实测 + 源码核对）**：
+
+| 平台 | 列目录 | 依据 |
+|------|--------|------|
+| 123 | 匿名 | `Pan123Api.getShareFiles`（`/b/api/share/get`）无鉴权头、注释「匿名、无签名」；`fidToken = S3KeyFlag\|Etag\|StorageNode` 已随列表返回 |
+| 139 | 匿名 | `C139Api.getShareFiles` 走 `sharePostAnonymous`，body `account:""`、无 authorization/mcloud-sign |
+| 百度 | 匿名 | 公共分享（无提取码）时 `sekey=""`、省略 `&sekey=`；仓库层无登录前置检查 |
+| 夸克 / UC | 匿名 | API 层无 cookie 预检；仓库/VM 也不再有闸门 |
+| 迅雷 | 匿名 | `XunleiApi.getShare` / `getShareDetail` 在 token 为空时**不写 Authorization 头**（带上失效 Bearer 反而被判 `unauthenticated`） |
+| GitHub | —— | 本来就不需要登录 |
+
+**闸门在哪（`ResolveViewModel`）**：
+- `startResolve` / `openFolder` / `goBack`：空凭据**照常下传**，并置 `isGuest = credential.isBlank()`（`backToInput` / `startGitHubResolve` 复位 false）。
+  解析失败时给服务端原文 + 一句「当前未登录，可到「网盘」页登录 XX 后重试」。
+- 仍要求登录（不要动）：`fetchDownloadLink`（取直链）、`downloadFiles` / `batchDownload`、`startDownload`、`saveToCloud`、`batchSaveToCloud`、`requestSave`（游客直接提示并 return，不打开目录选择）。
+  提示语统一为「下载/转存需要先登录 X（未登录仅能浏览文件列表）」，走 `downloadError` → Snackbar。
+
+**UI**：`ShareDetailScreen` 的 `GuestBrowseNotice()`（`viewModel.isGuest` 时显示在标题/面包屑下方）说明「可查看文件列表，下载/转存需先到「网盘」页登录」；
+操作弹窗里点「转存」会先关弹窗再弹 Snackbar（否则提示被 `ModalBottomSheet` 挡住）。
+
+**迅雷专属实现**（唯一需要改请求构造的平台）：
+- `XunleiApi.panRequest` / `panRequestM`：`accessToken` 为空 ⇒ 不写 `Authorization`（`currentAccessToken` 的旧值不会漏进来）。
+- `XunleiApi.panCall(..., anonymous = true)`：不带验证码、失败也不刷新 token / 不重试 `captcha_invalid`，把服务端真实错误直接抛上来。
+- `XunleiResolveRepository.accessOrEmpty()`：未登录返回 `""`；`deviceIdOrGuest()`：未登录回退 `XunleiApi.newDeviceId()`（否则「缺少设备标识」会把匿名列目录挡在门外，且该 id 只在进程内复用、不落库）。
+- 转存/取直链仍走 `access()` ⇒ 游客点下载会看到「请先登录迅雷网盘」。
+
+**排错提示**：
+- 服务端拒绝时优先看文案里的 `HTTP xxx` / `errno`：百度 `-6` = 未登录或登录态失效（此时提示「需要提取码，或需要登录百度网盘」），夸克/UC 非 JSON 响应会带 `HTTP 401/403`。
+- 游客模式下「某些平台列不出来」不代表协议不行：多数是分享本身需要提取码（先输密码再判断），或风控限速。
+- 回退：把 `startResolve` / `openFolder` / `goBack` 的空凭据下传换回「凭据为空即报错」，并恢复各仓库的 `isNullOrBlank` 校验即可；UI 提示条随 `isGuest` 自动消失。
+
+---
+
+### 3.20 分享有效期：UI 中性码必须经 `ShareExpire` 转换（**别把中性码直接下发给接口**）
+
+**中性码只有一套**：`1`=永久有效、`2`=1 天、`3`=7 天、`4`=30 天，定义在
+`app/src/main/kotlin/com/yunx/app/data/network/model/ShareExpire.kt`（`FOREVER` / `ONE_DAY` / `SEVEN_DAYS` / `THIRTY_DAYS`）。
+有效期选择器与结果展示都在 `app/src/main/kotlin/com/yunx/app/ui/screens/CloudFileSheets.kt`
+（`expireOptions` 选项、`expireLabel()` 文案），各网盘页 `onShare = { _, passcode, expiredType -> ... }` 下发的就是这个码。
+
+**各平台 `createShare` 的有效期语义完全不同**（这就是 139/百度/123 三个平台「选永久建成 1 天、选 1/7/30 天显示永久」的原因）：
+
+| 平台 | 接口字段 | 真实语义 | 转换函数 |
+|---|---|---|---|
+| 139（`C139Api.createShare`） | `period` | 天数；**永久 = 完全不传该字段** | `ShareExpire.daysOrNull()`（返回 `null` 即不传） |
+| 百度（`BaiduApi.createShare`） | `period` | 字面天数 `0/1/7/30`；`0` = 永久 | `ShareExpire.baiduPeriod()` |
+| 123（`Pan123Api.createShare`） | `expiration` | 绝对 ISO 时间串（now + 天数）；永久 = 2099 哨兵 | `ShareExpire.daysOrNull()` 后交给 `expiration()` 拼串 |
+| 迅雷（`XunleiApi.createShare`） | `expiration_days` | **字符串** `"-1"/"1"/"7"/"30"`；`-1` = 永久 | `ShareExpire.xunleiDays()` |
+| 夸克 / UC（`QuarkApi` / `UCApi`） | `expired_type` | 取值恰好等于中性码，原值直传 | 无（`QuarkApi` / `UCApi` KDoc 已注明） |
+
+**转换必须在 ViewModel 层完成**，`api.createShare(...)` 只接受平台真实语义（各 API 的 KDoc 都写了「不是 UI 中性码」）。新增平台或改有效期选项时，
+只要走 `ShareExpire` 就不会再错位；`ShareExpire.daysOrNull()` 对未知码**抛异常**（fail-loud），不允许再用 `else -> 永久 / 30 天 / "-1"` 兜底——
+那会把「新加了一种有效期但忘了映射」静默变成另一种有效期，比报错更难查。
+
+**回填显示**：接口不返回有效期的平台（139/123/迅雷）用**用户所选的中性码**回填 `ShareInfo.expiredType`；
+百度用响应里的 `expiredType`（`BaiduApi.BaiduShareResult.expiredType`，字段缺失为 `null`，回退到用户所选值，**别用 0 兜底——0 是永久**）。
+认不出的值统一回填 `ShareExpire.UNKNOWN = 0`，`expireLabel()` 显示「未知」，不再 fail-open 成「永久有效」。
+夸克/UC 用 `optInt("expired_type")` 取值，字段缺失同样落到「未知」。
+
+**回退**：删掉 `ShareExpire.kt` 并在各 ViewModel 恢复「中性码直传 + `else -> 1`」即可回到旧行为（不推荐，bug 会复现）。
+
 ---
 
 ## 4. 验证

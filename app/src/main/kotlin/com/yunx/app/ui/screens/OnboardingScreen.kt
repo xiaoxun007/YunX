@@ -18,6 +18,8 @@
 
 package com.yunx.app.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -37,6 +39,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -53,6 +56,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.OpenInNew
@@ -66,9 +72,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,6 +93,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -91,6 +104,7 @@ import com.yunx.app.R
 import com.yunx.app.ui.theme.effectsDefault
 import com.yunx.app.ui.theme.effectsFast
 import com.yunx.app.ui.theme.spatialDefault
+import com.yunx.app.util.PermissionState
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
@@ -98,9 +112,12 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * 首次启动引导页（两页式）：
+ * 首次启动引导页（三页式）：
  * - 第 1 页：简洁欢迎 —— 图标 / 名称 / 版本 / 一句话 / 开源仓库入口；
  * - 第 2 页：用户协议 + 免责声明 + 开源协议（长文，页内可滚动）；
+ * - 第 3 页：权限准备 —— 通知 / 后台运行 / 存储一次过一遍（见 [PermissionPage]）；
+ *   其中通知与后台运行可跳过，**存储权限在 Android 9 及以下是必要权限**（没有它保存必失败），
+ *   未授权时底部「开始使用」按钮置灰禁用，不给跳过（文案与图标不变，授权入口在权限页的存储卡片上）；
  * - 底部导航：圆点指示器 + 「上一步 / 下一步 / 开始使用」，页面切换用 pager 自身滑动 + 按钮区淡入淡出；
  * - 背景：Animated Blob（流体渐变）—— 自绘实现，不引第三方库。
  */
@@ -110,50 +127,101 @@ fun OnboardingScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val pagerState = rememberPagerState(pageCount = { 2 })
+    val pagerState = rememberPagerState(pageCount = { 3 })
     val scope = rememberCoroutineScope()
     // 只在换页时变化的粗粒度读取：按钮文案/指示器需要它
     val page = pagerState.currentPage
 
-    Box(modifier = modifier.fillMaxSize()) {
-        BlobBackground()
+    // ★ 存储权限：Android 9 及以下是「必要权限」—— 没它下载能跑完，但保存一定失败
+    //   （DownloadManager 保存前直接抛「未授予存储权限，无法保存到下载目录」）。
+    //   所以它不放在权限页里自生自灭，而是提升到这里：未授权时底部「开始使用」置灰禁用（文案不变），
+    //   不给跳过。Android 10+ 保存走媒体库，storageGranted() 恒为 true ⇒ 这段整体无感。
+    var storageGranted by remember { mutableStateOf(PermissionState.storageGranted(context)) }
+    // 用户拒绝过一次：授权框可能已弹不出来（勾了「不再询问」），之后一律改跳应用详情页
+    var storageDenied by remember { mutableStateOf(false) }
+    val storageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        storageGranted = PermissionState.storageGranted(context)
+        if (!granted) storageDenied = true
+    }
+    // 从授权框 / 系统设置页返回时重查：只靠 remember 初值会出现"授权完返回还显示未授权"
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                storageGranted = PermissionState.storageGranted(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val storageBlocking = PermissionState.storagePermissionRequired() && !storageGranted
+    val requestStorage: () -> Unit = {
+        if (storageDenied) {
+            // 已经拒绝过：运行时装不了授权框，只能去应用详情页手动打开权限
+            PermissionState.openAppDetails(context)
+        } else {
+            storageLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+    }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .safeDrawingPadding()
-        ) {
-            HorizontalPager(
-                state = pagerState,
+    // ★ 整页铺一层 Surface：引导页是 MainScreen 里提前 return 的全屏覆盖页，**不在 Scaffold 里**，
+    //   没有 Surface/Scaffold 就没人提供 LocalContentColor（其默认值是黑色）——
+    //   于是没写 color 的文本（第 1 页「云析」、第 2 页「使用前请阅读」）在深色模式下会变成黑字。
+    //   底色用 scheme.surface，与 BlobBackground 自己铺的 base 完全一致，观感不变。
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            BlobBackground()
+
+            Column(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) { index ->
-                // 页面内部的过渡：随滑动比例做轻微位移 + 淡出。
-                // ★ currentPageOffsetFraction 只在 graphicsLayer 块里读 —— 逐帧只失效图层，不重组页面内容。
-                Box(
+                    .fillMaxSize()
+                    .safeDrawingPadding()
+            ) {
+                HorizontalPager(
+                    state = pagerState,
                     modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            val offset = (pagerState.currentPage - index) + pagerState.currentPageOffsetFraction
-                            translationX = offset * size.width * 0.22f
-                            alpha = (1f - abs(offset)).coerceIn(0f, 1f)
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) { index ->
+                    // 页面内部的过渡：随滑动比例做轻微位移 + 淡出。
+                    // ★ currentPageOffsetFraction 只在 graphicsLayer 块里读 —— 逐帧只失效图层，不重组页面内容。
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                val offset = (pagerState.currentPage - index) + pagerState.currentPageOffsetFraction
+                                translationX = offset * size.width * 0.22f
+                                alpha = (1f - abs(offset)).coerceIn(0f, 1f)
+                            }
+                    ) {
+                        when (index) {
+                            0 -> WelcomePage(context)
+                            1 -> TermsPage()
+                            else -> PermissionPage(
+                                storageGranted = storageGranted,
+                                storageDenied = storageDenied,
+                                onRequestStorage = requestStorage
+                            )
                         }
-                ) {
-                    when (index) {
-                        0 -> WelcomePage(context)
-                        else -> TermsPage()
                     }
                 }
-            }
 
-            OnboardingBottomBar(
-                page = page,
-                pageCount = pagerState.pageCount,
-                onPrev = { scope.launch { pagerState.animateScrollToPage(page - 1) } },
-                onNext = { scope.launch { pagerState.animateScrollToPage(page + 1) } },
-                onFinish = onFinish
-            )
+                OnboardingBottomBar(
+                    page = page,
+                    pageCount = pagerState.pageCount,
+                    // 存储权限没给（仅 Android 9-）：主按钮置灰禁用 —— 文案恒为「开始使用」，
+                    // 授权入口在页面里的「存储权限」卡片；授权成功后按钮自动恢复可点
+                    finishEnabled = !storageBlocking,
+                    onPrev = { scope.launch { pagerState.animateScrollToPage(page - 1) } },
+                    onNext = { scope.launch { pagerState.animateScrollToPage(page + 1) } },
+                    onFinish = onFinish
+                )
+            }
         }
     }
 }
@@ -257,7 +325,9 @@ private fun WelcomePage(context: Context) {
         Text(
             text = "云析",
             style = MaterialTheme.typography.headlineLarge,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
+            // 显式给色：全屏覆盖页里不依赖 LocalContentColor（默认黑色，深色模式下会变黑字）
+            color = MaterialTheme.colorScheme.onSurface
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
@@ -369,7 +439,9 @@ private fun TermsPage() {
         Text(
             text = "使用前请阅读",
             style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
+            // 同上：不依赖 LocalContentColor，避免深色模式下黑字
+            color = MaterialTheme.colorScheme.onSurface
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
@@ -466,24 +538,33 @@ private fun TermsCard(
 // ==================== 底部导航 ====================
 
 /**
- * 底部导航：圆点指示器 + 「上一步 / 下一步 / 开始使用」。
+ * 底部导航：进度指示器居中，「上一步」在左、「下一步 / 开始使用」在右（紧凑按钮，不占满整行）。
+ * ★ 用 Box + align 而不是 Row(SpaceBetween)：左右按钮宽度随文案变化（「上一步」与「开始使用」字数不同），
+ *   SpaceBetween 会把指示器挤偏；绝对居中才符合"进度条在中间"。
  * 指示器的宽度与颜色、按钮文案的切换都带过渡（规格取项目统一的 M3E 动效）。
+ * ★ [finishEnabled] = 最后一页的「开始使用」是否可点（当前 = Android 9- 尚未授予存储权限时置灰禁用）。
+ *   文案与图标**不变**，授权入口在权限页的「存储权限」卡片里（那里才有「授权 / 去设置授权」按钮）。
  */
 @Composable
 private fun OnboardingBottomBar(
     page: Int,
     pageCount: Int,
+    finishEnabled: Boolean = true,
     onPrev: () -> Unit,
     onNext: () -> Unit,
     onFinish: () -> Unit
 ) {
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 16.dp)
     ) {
-        Row(horizontalArrangement = Arrangement.Center) {
+        // 中：进度指示器（绝对居中）
+        Row(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             repeat(pageCount) { i ->
                 val selected = i == page
                 val dotWidth by animateDpAsState(
@@ -510,37 +591,60 @@ private fun OnboardingBottomBar(
             }
         }
 
-        Spacer(modifier = Modifier.height(18.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // 第 2 页才出现「上一步」：淡入淡出，不挤动主按钮（主按钮占满剩余宽度）
-            AnimatedVisibility(
-                visible = page > 0,
-                enter = fadeIn(effectsDefault()),
-                exit = fadeOut(effectsFast())
+        // 左：上一步（第 1 页没有上一页：淡出且不占位，指示器因此始终居中）
+        AnimatedVisibility(
+            visible = page > 0,
+            enter = fadeIn(effectsDefault()),
+            exit = fadeOut(effectsFast()),
+            modifier = Modifier.align(Alignment.CenterStart)
+        ) {
+            TextButton(
+                onClick = onPrev,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                TextButton(onClick = onPrev) {
-                    Text("上一步", style = MaterialTheme.typography.titleSmall)
-                }
+                Icon(
+                    imageVector = Icons.Outlined.ChevronLeft,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(2.dp))
+                Text(text = "上一步", style = MaterialTheme.typography.labelLarge)
             }
-            Box(modifier = Modifier.weight(1f)) {
-                AnimatedContent(
-                    targetState = page,
-                    transitionSpec = { fadeIn(effectsDefault()) togetherWith fadeOut(effectsFast()) },
-                    label = "onboardingAction"
-                ) { p ->
-                    val last = p == pageCount - 1
-                    Button(
-                        onClick = { if (last) onFinish() else onNext() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                    ) {
-                        Text(
-                            text = if (last) "开始使用" else "下一步",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
+        }
+
+        // 右：下一步 / 开始使用（需要先授权存储时置灰禁用，文案与图标不变）
+        AnimatedContent(
+            targetState = page,
+            transitionSpec = { fadeIn(effectsDefault()) togetherWith fadeOut(effectsFast()) },
+            modifier = Modifier.align(Alignment.CenterEnd),
+            label = "onboardingAction"
+        ) { p ->
+            val last = p == pageCount - 1
+            Button(
+                onClick = { if (last) onFinish() else onNext() },
+                // 只有最后一页可能被禁用（Android 9- 未授予存储权限）
+                enabled = !last || finishEnabled,
+                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)
+            ) {
+                if (last) {
+                    Icon(
+                        imageVector = Icons.Outlined.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(
+                    text = if (last) "开始使用" else "下一步",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                if (!last) {
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Outlined.ChevronRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
         }

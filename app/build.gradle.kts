@@ -31,6 +31,7 @@ plugins {
 // 跨版本无法覆盖安装。这里读取随仓库公开的 keystore.properties（fork 专用，非官方发布密钥）。
 // 注意：用 import 的 Properties 而非 java.util.Properties —— 脚本顶层 java 已被 Gradle 的
 // java 扩展遮蔽（java.util 会解析成 JavaPluginExtension.util 而编译失败）。
+// 上游 #125 改为从 GitHub Secrets 注入证书；fork 仍走随仓库公开的 keystore.properties（gh-n 系列需要稳定可覆盖签名）。
 val keystoreProperties = Properties().apply {
     runCatching { load(file("keystore.properties").inputStream()) }
 }
@@ -52,8 +53,10 @@ android {
         // 1.2.7-gh4 = 30：merge 上游 master（#114~#123，M3/更新检测/UI 打磨/镜像接线）
         // 1.2.7-gh5 = 31：修复设置页「GitHub 下载镜像/网络代理」重复条目（merge 残留）
         // 1.2.7-gh6 = 32：补回设置条目间缺失间隔；通知点击拉起应用并直达下载页（flags+tab extra）
-        versionCode = 32
-        versionName = "1.2.7-gh6"
+        // 1.2.7-gh7 = 33：merge 上游 #124 引导页三页式/#126 未登录看列表/#127 分享有效期中性码；
+        //                 fork 设置页线程数补 GitHub 条目 + 书签页平台标签补 GITHUB 分支
+        versionCode = 33
+        versionName = "1.2.7-gh7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

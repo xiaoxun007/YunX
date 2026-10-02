@@ -484,7 +484,8 @@ class QuarkApi(
      * 创建分享（云盘功能抓包：POST /1/clouddrive/share）。
      * 注意：分享创建是**异步任务**——响应只有 data.task_id，必须轮询 /1/clouddrive/task 直到完成拿到 share_id。
      * @param urlType 1=链接无提取码 2=链接+提取码
-     * @param expiredType 1=永久 2=一天 3=七天 4=三十天
+     * @param expiredType 1=永久 2=一天 3=七天 4=三十天（**取值域与 UI 中性码一致**，见
+     *   [com.yunx.app.data.network.model.ShareExpire]，无需转换，Agent.md §3.20；调用方只能传 1..4）
      * @return 分享 share_id
      */
     suspend fun createShare(
@@ -574,7 +575,9 @@ class QuarkApi(
             it.body?.string() ?: throw QuarkApiException("请求失败：响应为空")
         }
         val json = runCatching { JSONObject(body) }.getOrElse {
-            throw QuarkApiException("响应解析失败")
+            // 服务端返回非 JSON（多半是 HTML 错误页/风控页）时带上 HTTP 状态码，
+            // 便于分辨「未登录被拒（401/403）」与「分享已失效」
+            throw QuarkApiException("响应解析失败（HTTP ${response.code}）")
         }
         if (json.optInt("status") != 200) {
             // 透传服务端 message，如「提取码错误」「分享已失效」等

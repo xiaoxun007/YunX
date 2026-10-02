@@ -53,6 +53,7 @@ import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.ShortNavigationBar
 import androidx.compose.material3.ShortNavigationBarDefaults
 import androidx.compose.material3.ShortNavigationBarItem
@@ -84,17 +85,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import android.content.res.Configuration
 import android.Manifest
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.PowerManager
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.yunx.app.data.db.AppDatabase
-import com.yunx.app.data.db.DownloadTaskEntity
 import com.yunx.app.data.download.ChunkDownloader
 import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.backup.AuthBackupManager
@@ -546,10 +543,6 @@ fun MainScreen(
     val c139Account by c139ViewModel.c139Account.collectAsState()
     val pan123Account by pan123ViewModel.pan123Account.collectAsState()
 
-    // 首次下载引导：锁屏保持下载默认开启，但新用户未加入「忽略电池优化」白名单 →引导一次
-    var showBatteryGuide by remember { mutableStateOf(false) }
-    var batteryGuideShown by remember { mutableStateOf(false) }
-
     // 解析页发起下载后，自动切换到「下载」Tab
     LaunchedEffect(resolveViewModel.downloadStarted) {
         if (resolveViewModel.downloadStarted) {
@@ -558,25 +551,8 @@ fun MainScreen(
         }
     }
 
-    // 首次下载任务启动：锁屏保持下载默认开启但未豁免电池优化 →引导一次。
-    // 监听任务状态而非 downloadStarted，覆盖解析页/网盘页/手动添加等所有下载入口。
-    LaunchedEffect(Unit) {
-        downloadViewModel.tasks.collect { tasks ->
-            if (!batteryGuideShown && tasks.any {
-                    it.status == DownloadTaskEntity.STATUS_DOWNLOADING ||
-                        it.status == DownloadTaskEntity.STATUS_PENDING
-                }
-            ) {
-                batteryGuideShown = true
-                val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-                if (settings.keepDownloadWhenLocked &&
-                    pm?.isIgnoringBatteryOptimizations(context.packageName) != true
-                ) {
-                    showBatteryGuide = true
-                }
-            }
-        }
-    }
+    // ★ 电池优化引导不再在这里弹：统一收到引导页第 3 页（OnboardingPermissionPage 的「后台运行」卡片），
+    //   之后只有设置页「锁屏后保持下载」那一项里的手动入口能再次跳系统设置。
 
     // 首次启动引导页：全屏覆盖（优先级最高）
     if (showOnboarding) {
@@ -887,37 +863,41 @@ fun MainScreen(
 
                 if (isLandscape) {
                     // 横屏：左侧侧边导航栏（NavigationRail）+ 右侧顶栏 & 内容
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            // 竖屏由 Scaffold 提供主题背景；横屏手动布局需显式设置，否则露出窗口默认白色
-                            .background(MaterialTheme.colorScheme.background)
+                    // ★ 外层 Surface 不只是底色（竖屏由 Scaffold 提供背景，横屏手动布局必须自己铺，
+                    //   否则露出窗口默认白色）：**只有 Surface/Scaffold 才会提供 LocalContentColor**
+                    //   （其默认值是黑色）——横屏没有 Scaffold，少了这层，深色模式下没写 color 的文本
+                    //   （例如 ShareFileRow 里的文件名）就会变成黑字。
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
                     ) {
-                        Row(modifier = Modifier.fillMaxSize()) {
-                            MainNavigationRail(
-                                currentTab = currentTab,
-                                onTabSelected = { currentTab = it }
-                            )
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxSize()
-                            ) {
-                                topBarContent()
-                                Box(
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            Row(modifier = Modifier.fillMaxSize()) {
+                                MainNavigationRail(
+                                    currentTab = currentTab,
+                                    onTabSelected = { currentTab = it }
+                                )
+                                Column(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .fillMaxWidth()
+                                        .fillMaxSize()
                                 ) {
-                                    tabContent()
+                                    topBarContent()
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxWidth()
+                                    ) {
+                                        tabContent()
+                                    }
                                 }
                             }
+                            // 全局 Snackbar（横屏无底部栏，悬浮底部居中）
+                            SnackbarHost(
+                                hostState = snackbarHostState,
+                                modifier = Modifier.align(Alignment.BottomCenter)
+                            )
                         }
-                        // 全局 Snackbar（横屏无底部栏，悬浮底部居中）
-                        SnackbarHost(
-                            hostState = snackbarHostState,
-                            modifier = Modifier.align(Alignment.BottomCenter)
-                        )
                     }
                 } else {
                     // 竖屏：Scaffold + 底部导航栏
@@ -1001,38 +981,6 @@ fun MainScreen(
                 }
             }
         }
-    }
-
-    // 首次下载引导：加入「忽略电池优化」白名单（锁屏保持下载生效的前提）
-    if (showBatteryGuide) {
-        AlertDialog(
-            onDismissRequest = { showBatteryGuide = false },
-            title = { Text("保持后台下载") },
-            text = {
-                Text(
-                    text = "「锁屏后保持下载」已开启，但应用尚未加入「忽略电池优化」白名单，息屏后可能被系统中断下载。是否前往系统设置？",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showBatteryGuide = false
-                        runCatching {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                    Uri.parse("package:${context.packageName}")
-                                )
-                            )
-                        }
-                    }
-                ) { Text("前往设置") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showBatteryGuide = false }) { Text("暂不") }
-            }
-        )
     }
 
     // 发现新版本（底部弹窗，覆盖在主页之上）：全应用唯一的更新弹窗实现，启动检查 / 手动检查 / 开发调试预览共用

@@ -18,27 +18,10 @@
 
 package com.yunx.app
 
-import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import com.yunx.app.crash.CrashHandler
 import com.yunx.app.ui.MainScreen
 import com.yunx.app.ui.screens.SafetyNoticeDialog
@@ -47,12 +30,9 @@ import com.yunx.app.util.ArchiveProbe
 
 class MainActivity : ComponentActivity() {
 
-    // Android 13+：下载前台服务通知需要动态授权，首次启动即引导（无论通知栏开关状态，授权后通知才可见）
-    private val notificationPermLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
-
-    // 通知被系统/用户关闭时（任意版本，含国产 ROM 默认关闭），启动后弹窗引导去系统设置开启
-    private var showNotificationGuide by mutableStateOf(false)
+    // ★ 通知权限不再在启动时申请/引导：统一收到引导页第 3 页（见 ui/screens/OnboardingPermissionPage.kt），
+    //   之后只有设置页里的手动入口（「通知栏下载进度」）会再申请，避免每次启动都弹窗打扰。
+    //   —— 上游 #124 收口；fork 删除本地 notificationPermLauncher/showNotificationGuide。
 
     // 通知点击带来的「直达下载页」信号：每次带 open_tab=download 的 Intent 拉起就 +1。
     // MainScreen 用 LaunchedEffect 监听该值并切到 Download Tab；0 表示无请求，正常启动行为不变。
@@ -83,8 +63,7 @@ class MainActivity : ComponentActivity() {
         }
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        requestNotificationPermissionIfNeeded()
-        // 首次启动也读 Intent extra：通知冷启动拉起时直达下载页
+        // 首次启动也读 Intent extra：通知冷启动拉起时直达下载页（fork 通知 flags 修复配套）
         consumeOpenTabFromIntent(intent)
         runCatching {
             val hits = ArchiveProbe.fast(this).toMutableList()
@@ -97,63 +76,7 @@ class MainActivity : ComponentActivity() {
             ComposeEmptyActivityTheme {
                 MainScreen(openDownloadSignal = openDownloadSignal)
                 SafetyNoticeDialog()
-                // 通知被禁用引导（Android 13+ 授权后仍被关 / 低版本被系统或用户关闭）
-                if (showNotificationGuide) {
-                    NotificationPermissionDialog(onDismiss = { showNotificationGuide = false })
-                }
             }
         }
     }
-
-    /** 通知权限：Android 13+ 先申请运行时权限；任意版本通知被禁用时引导去系统设置开启 */
-    private fun requestNotificationPermissionIfNeeded() {
-        val notifDisabled = !NotificationManagerCompat.from(this).areNotificationsEnabled()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            // Android 13+ 未授权：直接弹运行时授权框（授权后通知即可用，无需再引导）
-            notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (notifDisabled) {
-            // 其余情况（13+ 已授权但被关 / 低版本被系统或用户关闭，如国产 ROM 默认关闭）：
-            // 弹窗引导去系统设置开启
-            showNotificationGuide = true
-        }
-    }
-}
-
-/** 通知被禁用时的引导弹窗：跳系统应用通知设置页 */
-@Composable
-private fun NotificationPermissionDialog(onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("开启通知权限") },
-        text = {
-            Text("下载进度需要通知权限才能显示在通知栏。当前通知已被关闭，是否前往系统设置开启？")
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    onDismiss()
-                    runCatching {
-                        context.startActivity(
-                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                        )
-                    }.onFailure {
-                        runCatching {
-                            context.startActivity(
-                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                                    .setData(Uri.parse("package:${context.packageName}"))
-                            )
-                        }
-                    }
-                }
-            ) { Text("去开启") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("暂不") }
-        }
-    )
 }
