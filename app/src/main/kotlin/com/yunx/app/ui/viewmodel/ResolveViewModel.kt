@@ -816,45 +816,47 @@ class ResolveViewModel(
             startGitHubResolve(github)
             return
         }
+        // 网盘分享链接（6 个内置网盘分享全部是 http(s) 链接，必须先于通用直链判定，
+        // 否则 pan.baidu.com / www.123pan.com / cloud.189.cn 等都会被直链分支拦截）
+        val parsed = com.yunx.app.data.network.ShareLinkParser.parse(link)
+        if (parsed != null) {
+            loadJob?.cancel()
+            loadJob = viewModelScope.launch {
+                uiState = ResolveUiState.Loading
+                currentPlatform = parsed.platform
+                isGuest = false
+                // 游客模式：列目录不要求登录（6 个网盘的分享列表接口都允许匿名，详见 Agent.md §3.19）。
+                // 凭据为空时传空串，是否放行由服务端决定；下载/转存仍在各自入口要求登录。
+                val credential = currentCredential().orEmpty()
+                isGuest = credential.isBlank()
+                val repo = currentRepo()
+                repo.createSession(link, pwd, credential)
+                    .onSuccess { s ->
+                        session = s
+                        currentDirFid = currentDefaultDirFid()
+                        dirStack.clear()
+                        pathNames = emptyList()
+                        loadFiles(s, currentDirFid, credential, repo)
+                    }
+                    .onFailure { e ->
+                        // 加载被返回取消（CancellationException）时不写错误状态，避免回输入页后闪错误
+                        if (e is kotlinx.coroutines.CancellationException) return@onFailure
+                        val msg = e.message ?: "解析失败"
+                        // 游客模式失败时补一句可执行的引导，而不是只抛服务端原文
+                        uiState = ResolveUiState.Error(
+                            if (isGuest) "$msg（当前未登录，可到「网盘」页登录${platformName()}后重试）" else msg
+                        )
+                    }
+            }
+            return
+        }
         // 通用文件直链（非内置网盘分享、非 GitHub 的 http(s) 链接）：探测文件名/大小后直接弹下载确认
         val trimmed = link.trim()
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
             startDirectLinkResolve(trimmed)
             return
         }
-        loadJob?.cancel()
-        loadJob = viewModelScope.launch {
-            uiState = ResolveUiState.Loading
-            val parsed = com.yunx.app.data.network.ShareLinkParser.parse(link)
-            if (parsed == null) {
-                uiState = ResolveUiState.Error("无法识别分享链接")
-                return@launch
-            }
-            currentPlatform = parsed.platform
-            isGuest = false
-            // 游客模式：列目录不要求登录（6 个网盘的分享列表接口都允许匿名，详见 Agent.md §3.19）。
-            // 凭据为空时传空串，是否放行由服务端决定；下载/转存仍在各自入口要求登录。
-            val credential = currentCredential().orEmpty()
-            isGuest = credential.isBlank()
-            val repo = currentRepo()
-            repo.createSession(link, pwd, credential)
-                .onSuccess { s ->
-                    session = s
-                    currentDirFid = currentDefaultDirFid()
-                    dirStack.clear()
-                    pathNames = emptyList()
-                    loadFiles(s, currentDirFid, credential, repo)
-                }
-                .onFailure { e ->
-                    // 加载被返回取消（CancellationException）时不写错误状态，避免回输入页后闪错误
-                    if (e is kotlinx.coroutines.CancellationException) return@onFailure
-                    val msg = e.message ?: "解析失败"
-                    // 游客模式失败时补一句可执行的引导，而不是只抛服务端原文
-                    uiState = ResolveUiState.Error(
-                        if (isGuest) "$msg（当前未登录，可到「网盘」页登录${platformName()}后重试）" else msg
-                    )
-                }
-        }
+        uiState = ResolveUiState.Error("无法识别分享链接")
     }
 
     /**
