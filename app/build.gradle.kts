@@ -49,10 +49,11 @@ android {
         minSdk = 24
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
-        // 上游升 1.2.8（#128~#133）后 fork 后缀重计：1.2.8-gh1 = 36（merge 上游 1.2.8，剔除 #130 QQ群/#131 fastlane）。
-        // 上游 1.2.7 系列历史：1.2.7-gh1 = 27 …… 1.2.7-gh9 = 35（下载入队自动滑动 + 下载页分享文件 + 直链拦截网盘解析顺序修复）
-        versionCode = 36
-        versionName = "1.2.8-gh1"
+        // 上游升 1.2.8（#128~#133）后 fork 后缀重计：1.2.8-gh1 = 36（merge 上游 1.2.8，剔除 #130 QQ群/#131 fastlane）；
+        // 1.2.8-gh2 = 37（移除下载页分享功能 + GitHubLinkParser \p{Pd}\u2212 规范化补单测 + GitHub 批量入队滚动记录）。
+        // 上游 1.2.7 系列历史：1.2.7-gh1 = 27 …… 1.2.7-gh9 = 35（下载入队自动滑动 + 直链拦截网盘解析顺序修复）
+        versionCode = 37
+        versionName = "1.2.8-gh2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
