@@ -18,8 +18,8 @@
 
 package com.yunx.app.data.network
 
-/** 网盘平台 */
-enum class SharePlatform { QUARK, UC, XUNLEI, BAIDU, C139, PAN123, GITHUB }
+/** 网盘平台；GENERIC 为通用文件直链（非内置网盘分享的 http(s) 链接，见 DirectLinkProbe） */
+enum class SharePlatform { QUARK, UC, XUNLEI, BAIDU, C139, PAN123, GITHUB, GENERIC }
 
 /**
  * 解析结果：share_id + 提取码 + 平台。

@@ -89,8 +89,14 @@ fun DownloadLinkDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // 通用直链/GitHub 直链是原始 URL 直接下载（无取链、无有效期）；网盘直链才有 15-30 分钟有效期
+                val isDirectUrl = link.fid.startsWith("direct:") || link.fid == "github:direct"
                 Text(
-                    text = "下载直链已生成（有效期约 15-30 分钟）",
+                    text = if (isDirectUrl) {
+                        "将直接下载以下文件"
+                    } else {
+                        "下载直链已生成（有效期约 15-30 分钟）"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

@@ -859,6 +859,7 @@ internal fun bookmarkPlatformLabel(platform: String): String = when (platform) {
     "C139" -> "139网盘"
     "PAN123" -> "123云盘"
     "GITHUB" -> "GitHub"
+    "GENERIC" -> "文件直链"
     else -> "网盘"
 }
 

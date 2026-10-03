@@ -804,6 +804,7 @@ private fun platformShortLabel(platform: String): String? = when (platform) {
     "C139" -> "139"
     "PAN123" -> "123"
     "GITHUB" -> "GitHub"
+    "GENERIC" -> "直链"
     else -> null
 }
 
@@ -853,6 +854,7 @@ private fun platformLabel(platform: SharePlatform): String = when (platform) {
     SharePlatform.C139 -> "139 网盘"
     SharePlatform.PAN123 -> "123云盘"
     SharePlatform.GITHUB -> "GitHub"
+    SharePlatform.GENERIC -> "文件直链"
 }
 
 /** 剪贴板分享链接提示卡片：检测到分享链接时，询问是否粘贴解析 */

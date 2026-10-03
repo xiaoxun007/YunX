@@ -786,6 +786,7 @@ class ResolveViewModel(
         SharePlatform.C139 -> "139 网盘"
         SharePlatform.PAN123 -> "123云盘"
         SharePlatform.GITHUB -> "GitHub"
+        SharePlatform.GENERIC -> "直链"
         else -> "夸克网盘"
     }
 
@@ -851,6 +852,8 @@ class ResolveViewModel(
     private fun startDirectLinkResolve(url: String) {
         currentLink = url
         currentPwd = null
+        // 通用直链平台：收藏/书签标签显示"文件直链"，避免落到默认网盘
+        currentPlatform = SharePlatform.GENERIC
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             uiState = ResolveUiState.Loading
