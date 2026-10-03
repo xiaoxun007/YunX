@@ -305,6 +305,18 @@ class ResolveViewModel(
     var downloadStarted by mutableStateOf(false)
         private set
 
+    /**
+     * 刚入队需在下载页定位的任务 id：下载页切换到该任务（单文件滑到任务，文件夹滑到其分组）。
+     * 下载页消费后置空。
+     */
+    var pendingScrollTaskId by mutableStateOf<Long?>(null)
+        private set
+
+    /** 下载页已消费定位请求 */
+    fun consumePendingScrollTaskId() {
+        pendingScrollTaskId = null
+    }
+
     // ---------- 长按多选（解析页文件列表） ----------
 
     /** 多选模式（长按进入） */
@@ -1585,7 +1597,7 @@ class ResolveViewModel(
         } else {
             link.downloadUrl
         }
-        downloadManager.enqueue(
+        val id = downloadManager.enqueue(
             url = effectiveUrl,
             fileName = fileName,
             headers = headers,
@@ -1601,6 +1613,8 @@ class ResolveViewModel(
                 }
             }
         }
+        // 记录最新入队任务：下载页切换到该任务（文件夹批量时指向组内最后一个文件 → 定位到文件夹分组）
+        pendingScrollTaskId = id
     }
 
     /** 将直链加入下载队列（单文件下载：入队后立即切换到下载页） */
@@ -1611,19 +1625,20 @@ class ResolveViewModel(
             // 通用直链（解析页直链分支，fid 前缀 direct:）：无需登录/取链/镜像，
             // 直接用探测到的 URL 入队，线程数走通用设置（GENERIC）
             if (link.fid.startsWith("direct:")) {
-                downloadManager.enqueue(
+                val id = downloadManager.enqueue(
                     url = link.downloadUrl,
                     fileName = link.filename,
                     size = link.size,
                     platform = DownloadPlatform.GENERIC
                 )
+                pendingScrollTaskId = id
                 downloadStarted = true
                 return@launch
             }
             // GitHub 分支：无需网盘凭证，直链先经镜像前缀转换，带 size 和 platform=github 入队
             if (currentPlatform == SharePlatform.GITHUB) {
                 val prefix = mirrorPrefixProvider()
-                downloadManager.enqueue(
+                val id = downloadManager.enqueue(
                     url = UpdateChecker.mirrorUrl(link.downloadUrl, prefix),
                     fileName = link.filename,
                     size = link.size,
@@ -1631,6 +1646,7 @@ class ResolveViewModel(
                     // 镜像挂掉时回退原始直连（link.downloadUrl 为未镜像的 GitHub 直链）
                     fallbackUrl = link.downloadUrl
                 )
+                pendingScrollTaskId = id
                 downloadStarted = true
                 return@launch
             }

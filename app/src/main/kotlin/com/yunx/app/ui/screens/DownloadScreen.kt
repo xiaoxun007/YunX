@@ -92,6 +92,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -124,11 +125,51 @@ import java.io.File
 fun DownloadScreen(
     scrollBehavior: TopAppBarScrollBehavior,
     viewModel: DownloadViewModel,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** 需定位的任务 id（下载入队后由解析页传入）：单文件滑到该任务，文件夹滑到其顶级目录分组 */
+    scrollTaskId: Long? = null,
+    /** 定位完成（或找不到）后回调，由调用方清空定位请求 */
+    onScrollTaskConsumed: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val tasks by viewModel.tasks.collectAsState()
     val stats by viewModel.stats.collectAsState()
+
+    // 列表滚动状态：入队后跳转到对应任务（单文件 → 该任务；文件夹 → 其顶级目录分组）
+    val listState = rememberLazyListState()
+    // 已处理过的定位 id：防止任务状态刷新（进度/完成）反复触发滚动
+    var lastScrolledTaskId by remember { mutableStateOf<Long?>(null) }
+
+    LaunchedEffect(scrollTaskId, tasks) {
+        val id = scrollTaskId ?: return@LaunchedEffect
+        if (id == lastScrolledTaskId) return@LaunchedEffect
+        // 计算目标 index：rootTasks（无 '/' 单文件）在前，folderGroups（含 '/'）按顶级目录分组在后
+        val rootCount = tasks.count { !it.fileName.contains('/') }
+        val target = tasks.firstOrNull { it.id == id }
+        val index = when {
+            target != null && !target.fileName.contains('/') ->
+                tasks.indexOfFirst { it.id == id && !it.fileName.contains('/') }
+            target != null -> {
+                // 文件夹任务：定位到其顶级目录分组在列表中的位置
+                val folder = target.fileName.substringBefore('/')
+                val groups = tasks.filter { it.fileName.contains('/') }
+                    .map { it.fileName.substringBefore('/') }.distinct()
+                val groupIdx = groups.indexOf(folder)
+                if (groupIdx >= 0) rootCount + groupIdx else -1
+            }
+            else -> -1
+        }
+        if (index >= 0) {
+            listState.animateScrollToItem(index)
+            lastScrolledTaskId = id
+            onScrollTaskConsumed()
+        } else if (tasks.isNotEmpty()) {
+            // 列表已加载但目标不在（已删除/已完成清理）→ 消费请求，避免重复触发
+            lastScrolledTaskId = id
+            onScrollTaskConsumed()
+        }
+    }
+
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<DownloadTaskEntity?>(null) }
     var showDeleteAllConfirm by remember { mutableStateOf(false) }
@@ -168,6 +209,7 @@ fun DownloadScreen(
                     onDeleteAll = { showDeleteAllConfirm = true }
                 )
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()

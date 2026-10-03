@@ -842,7 +842,12 @@ fun MainScreen(
                                     // 更多菜单「清除 Token」：先二次确认再清除
                                     onGitHubClearToken = { showGitHubClearConfirm = true }
                                 )
-                                MainTab.Download -> DownloadScreen(scrollBehavior, downloadViewModel)
+                                MainTab.Download -> DownloadScreen(
+                                    scrollBehavior,
+                                    downloadViewModel,
+                                    scrollTaskId = resolveViewModel.pendingScrollTaskId,
+                                    onScrollTaskConsumed = { resolveViewModel.consumePendingScrollTaskId() }
+                                )
                                 MainTab.Settings -> SettingsScreen(
                                     scrollBehavior = scrollBehavior,
                                     themeRowModifier = themeRowModifier,
