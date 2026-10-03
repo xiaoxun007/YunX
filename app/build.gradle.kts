@@ -56,8 +56,9 @@ android {
         // 1.2.7-gh7 = 33：merge 上游 #124 引导页三页式/#126 未登录看列表/#127 分享有效期中性码；
         //                 fork 设置页线程数补 GitHub 条目 + 书签页平台标签补 GITHUB 分支
         // 1.2.7-gh8 = 34：通知点击不跳转根治（singleTask）+ 加载中返回不退出 + 通用文件直链直接弹下载
-        versionCode = 34
-        versionName = "1.2.7-gh8"
+        // 1.2.7-gh9 = 35：下载入队自动滑到当前任务 + 下载页分享文件（互传）+ 修复直链拦截网盘解析顺序
+        versionCode = 35
+        versionName = "1.2.7-gh9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
