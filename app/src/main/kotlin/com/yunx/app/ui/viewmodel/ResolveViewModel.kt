@@ -27,6 +27,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.yunx.app.data.db.BookmarkDao
 import com.yunx.app.data.db.BookmarkEntity
+import com.yunx.app.data.download.DirectLinkProbe
 import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.BaiduConstants
@@ -800,6 +801,12 @@ class ResolveViewModel(
             startGitHubResolve(github)
             return
         }
+        // 通用文件直链（非内置网盘分享、非 GitHub 的 http(s) 链接）：探测文件名/大小后直接弹下载确认
+        val trimmed = link.trim()
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+            startDirectLinkResolve(trimmed)
+            return
+        }
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             uiState = ResolveUiState.Loading
@@ -832,6 +839,38 @@ class ResolveViewModel(
                         if (isGuest) "$msg（当前未登录，可到「网盘」页登录${platformName()}后重试）" else msg
                     )
                 }
+        }
+    }
+
+    /**
+     * 通用文件直链解析（非内置网盘分享、非 GitHub 的 http(s) 链接）：
+     * 先 Range 探测拿真实文件名（Content-Disposition）与大小，再弹下载确认窗。
+     * 文件名三级兜底：Content-Disposition → URL 路径最后段（去 query/# 后解码）→ download。
+     * 探测失败静默回退（不阻塞、不报错），仍正常弹窗；加载中按返回由 loadJob 取消。
+     */
+    private fun startDirectLinkResolve(url: String) {
+        currentLink = url
+        currentPwd = null
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            uiState = ResolveUiState.Loading
+            val probe = DirectLinkProbe.probe(url)
+            // 探测期间被返回键取消（BackHandler → navigateBack → loadJob.cancel）：不再弹窗
+            if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return@launch
+            // URL 段名兜底：去 query/# 取路径最后一段并解码（支持中文名）；纯目录/空段不算文件名
+            val urlSegment = url.substringBefore('?').substringBefore('#').substringAfterLast('/')
+                .let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
+                .trim()
+            val filename = probe.filename
+                ?: urlSegment.takeIf { it.isNotBlank() && it != "/" }
+                ?: "download"
+            downloadLink = DownloadLink(
+                fid = "direct:${url.hashCode()}",
+                filename = filename,
+                downloadUrl = url,
+                size = probe.size ?: -1
+            )
+            uiState = ResolveUiState.Idle
         }
     }
 
@@ -1564,6 +1603,18 @@ class ResolveViewModel(
         viewModelScope.launch {
             // 开始下载：先关闭弹窗（临时转存由下载完成 onComplete 清理，不在此时删）
             downloadLink = null
+            // 通用直链（解析页直链分支，fid 前缀 direct:）：无需登录/取链/镜像，
+            // 直接用探测到的 URL 入队，线程数走通用设置（GENERIC）
+            if (link.fid.startsWith("direct:")) {
+                downloadManager.enqueue(
+                    url = link.downloadUrl,
+                    fileName = link.filename,
+                    size = link.size,
+                    platform = DownloadPlatform.GENERIC
+                )
+                downloadStarted = true
+                return@launch
+            }
             // GitHub 分支：无需网盘凭证，直链先经镜像前缀转换，带 size 和 platform=github 入队
             if (currentPlatform == SharePlatform.GITHUB) {
                 val prefix = mirrorPrefixProvider()

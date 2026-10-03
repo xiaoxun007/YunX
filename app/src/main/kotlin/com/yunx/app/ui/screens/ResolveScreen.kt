@@ -181,7 +181,9 @@ fun ResolveScreen(
             text.isNotBlank() &&
             text != link &&
             text != ignoredClipboard &&
-            (ShareLinkParser.parse(text) != null || GitHubLinkParser.parse(text) != null)
+            (ShareLinkParser.parse(text) != null ||
+                GitHubLinkParser.parse(text) != null ||
+                isDirectLinkText(text))
         ) {
             clipboardSuggestion = text
         }
@@ -406,6 +408,7 @@ fun ResolveScreen(
                     platformName = when {
                         githubParsed != null -> "GitHub"
                         shareParsed != null -> platformLabel(shareParsed.platform)
+                        isDirectLinkText(suggestion) -> "文件直链"
                         else -> "网盘"
                     },
                     onPaste = {
@@ -832,6 +835,14 @@ private fun readClipboardSafely(context: Context): String? = runCatching {
         ?.coerceToText(context)
         ?.toString()
 }.getOrNull()
+
+/** 剪贴板文本是否为通用文件直链（http/https 开头；GitHub/内置网盘链接已被各自 parse 前置识别） */
+private fun isDirectLinkText(text: String): Boolean {
+    val t = text.trim()
+    return (t.startsWith("http://") || t.startsWith("https://")) &&
+        GitHubLinkParser.parse(t) == null &&
+        ShareLinkParser.parse(t) == null
+}
 
 /** 平台名称（提示卡片展示） */
 private fun platformLabel(platform: SharePlatform): String = when (platform) {
