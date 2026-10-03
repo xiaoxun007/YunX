@@ -48,6 +48,14 @@ object ThemeController {
     var fileNameMultiLine by mutableStateOf(false)
         private set
 
+    /** 自动识别剪贴板分享链接：关闭后不再读取剪贴板（默认开启） */
+    var clipboardSuggestEnabled by mutableStateOf(true)
+        private set
+
+    /** 接受预发布版更新：检查更新时包含 GitHub Pre-release（默认关闭） */
+    var acceptPrereleaseUpdate by mutableStateOf(false)
+        private set
+
     private var initialized = false
 
     /** 从持久化存储加载（幂等；首次调用有效） */
@@ -58,6 +66,8 @@ object ThemeController {
         colorMode = s.themeColorMode
         seedColor = s.themeSeedColor
         fileNameMultiLine = s.fileNameMultiLine
+        clipboardSuggestEnabled = s.clipboardSuggestEnabled
+        acceptPrereleaseUpdate = s.acceptPrereleaseUpdate
         initialized = true
     }
 
@@ -87,5 +97,17 @@ object ThemeController {
     fun setFileNameMultiLine(context: Context, value: Boolean) {
         fileNameMultiLine = value
         SettingsRepository(context).fileNameMultiLine = value
+    }
+
+    /** 设置是否自动识别剪贴板分享链接并持久化 */
+    fun setClipboardSuggestEnabled(context: Context, value: Boolean) {
+        clipboardSuggestEnabled = value
+        SettingsRepository(context).clipboardSuggestEnabled = value
+    }
+
+    /** 设置是否接受预发布版更新并持久化 */
+    fun setAcceptPrereleaseUpdate(context: Context, value: Boolean) {
+        acceptPrereleaseUpdate = value
+        SettingsRepository(context).acceptPrereleaseUpdate = value
     }
 }

@@ -32,6 +32,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -113,8 +115,11 @@ import com.yunx.app.ui.theme.spatialFast
 /** 文件操作菜单类型（FileActionSheet 内切换） */
 private enum class ActionStep { MENU, MOVE, SHARE, RENAME, DELETE }
 
-/** 有效期选项：名称 + UI 中性码（[ShareExpire]；各平台 API 取值不同，由 ViewModel 负责转换，Agent.md §3.20） */
-private val expireOptions = listOf(
+/**
+ * 默认有效期选项：名称 + UI 中性码（[ShareExpire]；各平台 API 取值不同，由 ViewModel 负责转换，Agent.md §3.20）。
+ * 115 的档位与中性码不同（长期/1 天/3 天/7 天/15 天），由 115 云盘页传入 `ShareExpire.PAN115_OPTIONS`。
+ */
+private val defaultExpireOptions = listOf(
     "永久有效" to ShareExpire.FOREVER,
     "1 天" to ShareExpire.ONE_DAY,
     "7 天" to ShareExpire.SEVEN_DAYS,
@@ -135,6 +140,8 @@ internal fun FileActionSheet(
     onDismiss: () -> Unit,
     /** 提取码规则（各平台不同，见 [PasscodeMode]） */
     passcodeMode: PasscodeMode = PasscodeMode.OPTIONAL,
+    /** 有效期档位（默认六平台通用档；115 传 [ShareExpire.PAN115_OPTIONS]） */
+    expireOptions: List<Pair<String, Int>> = defaultExpireOptions,
     moveStep: @Composable (onBack: () -> Unit, onDone: () -> Unit) -> Unit
 ) {
     var step by remember { mutableStateOf(ActionStep.MENU) }
@@ -184,6 +191,7 @@ internal fun FileActionSheet(
                     subtitle = file.fname,
                     operating = operating,
                     passcodeMode = passcodeMode,
+                    expireOptions = expireOptions,
                     onBack = { step = ActionStep.MENU },
                     onCreateShare = onShare
                 )
@@ -484,19 +492,23 @@ internal fun QuarkMoveStep(
 internal enum class PasscodeMode { OPTIONAL, REQUIRED, REQUIRED_OR_AUTO, SERVER_GENERATED }
 
 /** 分享：提取码 + 有效期设置（六大网盘页共用，提交走 [onCreateShare]） */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ShareStep(
     title: String,
     subtitle: String,
     operating: Boolean,
     passcodeMode: PasscodeMode,
+    expireOptions: List<Pair<String, Int>> = defaultExpireOptions,
     onBack: () -> Unit,
     onCreateShare: (withPassword: Boolean, passcode: String, expiredType: Int) -> Unit
 ) {
     var withPassword by remember { mutableStateOf(false) }
     var passcode by remember { mutableStateOf("") }
-    var expiredType by remember { mutableStateOf(ShareExpire.FOREVER) }
+    // 默认选中第一档：各平台的第一档都是「永久有效」，但 115 的档位码是 101..105（不是中性码），
+    // 所以不能写死 ShareExpire.FOREVER，否则 115 弹窗打开时五个档位一个都没选中（2026-10 的 bug）。
+    // 用 remember（不带 key）：列表实例每次组合都可能重建，带 key 会把用户已选的档位重置回第一档。
+    var expiredType by remember { mutableStateOf(expireOptions.firstOrNull()?.second ?: ShareExpire.FOREVER) }
 
     Column(
         modifier = Modifier
@@ -587,7 +599,12 @@ private fun ShareStep(
 
         Text("有效期", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(modifier = Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // FlowRow 而不是 Row：115 有 5 档（永久/1/3/7/15 天），一行放不下会把最右一档压扁，
+        // 换行后每档都保持自然宽度；其余平台的 4 档也照常一行显示。
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             expireOptions.forEach { (name, value) ->
                 FilterChip(
                     selected = expiredType == value,
@@ -797,13 +814,14 @@ internal fun ShareResultDialog(
     val context = LocalContext.current
     // Dialog 内提示宿主（AlertDialog 为独立窗口）
     val snackbarHostState = rememberGlobalSnackbarHostState()
-    // 拼接分享文案（按平台区分：139 / 123 / UC / 迅雷 / 百度 / 夸克）
+    // 拼接分享文案（按平台区分：139 / 123 / UC / 迅雷 / 百度 / 115 / 夸克）
     val platformName = when {
         info.shareUrl.contains("139.com") -> "139网盘"
         info.shareUrl.contains("123pan") || info.shareUrl.contains("123865") -> "123云盘"
         info.shareUrl.contains("uc.cn") -> "UC网盘"
         info.shareUrl.contains("xunlei.com") -> "迅雷网盘"
         info.shareUrl.contains("baidu.com") -> "百度网盘"
+        info.shareUrl.contains("115") -> "115网盘"
         else -> "夸克网盘"
     }
     val shareText = buildString {
@@ -838,6 +856,15 @@ internal fun ShareResultDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                // 非致命提示（如 115 分享已建但有效期没改成功），不打断分享结果展示
+                info.warning?.takeIf { it.isNotBlank() }?.let { warning ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = warning,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
                 // Dialog 内提示（AlertDialog 为独立窗口，需自带 Snackbar 宿主）
                 SnackbarHost(hostState = snackbarHostState)
             }
@@ -923,12 +950,17 @@ private fun randomPasscode(): String {
     return (1..4).map { chars.random() }.joinToString("")
 }
 
-/** 中性码 → 展示文案；未知值显示「未知」而不是 fail-open 成「永久有效」 */
+/** 中性码 → 展示文案；未知值显示「未知」而不是 fail-open 成「永久有效」（115 用自己的 101..105 码位） */
 private fun expireLabel(type: Int): String = when (type) {
     ShareExpire.FOREVER -> "永久有效"
     ShareExpire.ONE_DAY -> "1 天"
     ShareExpire.SEVEN_DAYS -> "7 天"
     ShareExpire.THIRTY_DAYS -> "30 天"
+    ShareExpire.PAN115_FOREVER -> "永久有效"
+    ShareExpire.PAN115_ONE_DAY -> "1 天"
+    ShareExpire.PAN115_THREE_DAYS -> "3 天"
+    ShareExpire.PAN115_SEVEN_DAYS -> "7 天"
+    ShareExpire.PAN115_FIFTEEN_DAYS -> "15 天"
     else -> "未知"
 }
 
@@ -951,6 +983,8 @@ internal fun BatchActionSheet(
     onDismiss: () -> Unit,
     /** 提取码规则（各平台不同，见 [PasscodeMode]） */
     passcodeMode: PasscodeMode = PasscodeMode.OPTIONAL,
+    /** 有效期档位（默认六平台通用档；115 传 [ShareExpire.PAN115_OPTIONS]） */
+    expireOptions: List<Pair<String, Int>> = defaultExpireOptions,
     initialStep: BatchStep = BatchStep.MENU,
     moveStep: @Composable (onBack: () -> Unit, onDone: () -> Unit) -> Unit
 ) {
@@ -991,6 +1025,7 @@ internal fun BatchActionSheet(
                     subtitle = "已选 $count 项",
                     operating = operating,
                     passcodeMode = passcodeMode,
+                    expireOptions = expireOptions,
                     onBack = { step = BatchStep.MENU },
                     onCreateShare = onShare
                 )

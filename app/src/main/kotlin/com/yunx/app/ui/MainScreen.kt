@@ -100,6 +100,7 @@ import com.yunx.app.data.network.C139Api
 import com.yunx.app.data.network.GitHubApi
 import com.yunx.app.data.network.GitHubLinkParser
 import com.yunx.app.data.network.GitHubTokenStore
+import com.yunx.app.data.network.Pan115Api
 import com.yunx.app.data.network.Pan123Api
 import com.yunx.app.data.network.QuarkApi
 import com.yunx.app.data.network.TokenCheck
@@ -111,6 +112,8 @@ import com.yunx.app.data.repository.BaiduAccountRepository
 import com.yunx.app.data.repository.BaiduResolveRepository
 import com.yunx.app.data.repository.C139AccountRepository
 import com.yunx.app.data.repository.C139ResolveRepository
+import com.yunx.app.data.repository.Pan115AccountRepository
+import com.yunx.app.data.repository.Pan115ResolveRepository
 import com.yunx.app.data.repository.Pan123AccountRepository
 import com.yunx.app.data.repository.Pan123ResolveRepository
 import com.yunx.app.data.repository.QuarkAccountRepository
@@ -121,6 +124,7 @@ import com.yunx.app.data.repository.XunleiAccountRepository
 import com.yunx.app.data.repository.XunleiResolveRepository
 import com.yunx.app.ui.login.BaiduLoginScreen
 import com.yunx.app.ui.login.C139LoginScreen
+import com.yunx.app.ui.login.Pan115LoginScreen
 import com.yunx.app.ui.login.Pan123LoginScreen
 import com.yunx.app.ui.login.QuarkLoginScreen
 import com.yunx.app.ui.login.UCLoginScreen
@@ -144,6 +148,8 @@ import com.yunx.app.ui.viewmodel.C139AccountViewModel
 import com.yunx.app.ui.viewmodel.C139CloudViewModel
 import com.yunx.app.ui.viewmodel.DownloadViewModel
 import com.yunx.app.ui.viewmodel.DriveQuotaViewModel
+import com.yunx.app.ui.viewmodel.Pan115AccountViewModel
+import com.yunx.app.ui.viewmodel.Pan115CloudViewModel
 import com.yunx.app.ui.viewmodel.Pan123AccountViewModel
 import com.yunx.app.ui.viewmodel.Pan123CloudViewModel
 import com.yunx.app.ui.viewmodel.QuarkAccountViewModel
@@ -159,6 +165,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.yunx.app.data.network.HttpClients
+import com.yunx.app.ui.theme.ThemeController
 import com.yunx.app.ui.theme.effectsDefault
 import com.yunx.app.ui.theme.effectsFast
 
@@ -206,6 +213,7 @@ fun MainScreen(
     var showBaiduLogin by rememberSaveable { mutableStateOf(false) }
     var showC139Login by rememberSaveable { mutableStateOf(false) }
     var showPan123Login by rememberSaveable { mutableStateOf(false) }
+    var showPan115Login by rememberSaveable { mutableStateOf(false) }
     var showAbout by rememberSaveable { mutableStateOf(false) }
     var showSupport by rememberSaveable { mutableStateOf(false) }
     var showTheme by rememberSaveable { mutableStateOf(false) }
@@ -228,7 +236,7 @@ fun MainScreen(
     // 最近一次成功拿到的真实 Release：既用于「发现新版本」弹窗，也供设置页的开发调试入口直接预览
     var latestRelease by remember { mutableStateOf<UpdateChecker.Release?>(null) }
     LaunchedEffect(Unit) {
-        when (val result = UpdateChecker.fetchLatestRelease()) {
+        when (val result = UpdateChecker.fetchLatestRelease(ThemeController.acceptPrereleaseUpdate)) {
             is UpdateChecker.CheckResult.Failure -> Unit // 启动检查不打扰用户，失败原因已由 UpdateChecker 打 E 级日志
             is UpdateChecker.CheckResult.Success -> {
                 val release = result.release
@@ -252,7 +260,7 @@ fun MainScreen(
     val checkForUpdate: () -> Unit = {
         scope.launch {
             SnackbarController.show("正在检查更新…")
-            when (val result = UpdateChecker.fetchLatestRelease()) {
+            when (val result = UpdateChecker.fetchLatestRelease(ThemeController.acceptPrereleaseUpdate)) {
                 is UpdateChecker.CheckResult.Failure -> SnackbarController.show("检查更新失败：${result.reason}")
                 is UpdateChecker.CheckResult.Success -> {
                     val release = result.release
@@ -284,6 +292,7 @@ fun MainScreen(
     val baiduApi = remember { BaiduApi() }
     val c139Api = remember { C139Api() }
     val pan123Api = remember { Pan123Api() }
+    val pan115Api = remember { Pan115Api() }
     val db = remember { AppDatabase.get(context) }
     val settings = remember { SettingsRepository(context) }
     val repository = remember {
@@ -304,6 +313,9 @@ fun MainScreen(
     val pan123Repository = remember {
         Pan123AccountRepository(db.pan123AccountDao(), pan123Api)
     }
+    val pan115Repository = remember {
+        Pan115AccountRepository(db.pan115AccountDao(), pan115Api)
+    }
     // 网盘认证备份：打包/恢复各平台凭证
     val backupManager = remember {
         AuthBackupManager(
@@ -312,7 +324,8 @@ fun MainScreen(
             db.xunleiAccountDao(),
             db.baiduAccountDao(),
             db.c139AccountDao(),
-            db.pan123AccountDao()
+            db.pan123AccountDao(),
+            db.pan115AccountDao()
         )
     }
     // GitHub API 封装：Token 从 GitHubTokenStore 动态读取（Keystore 加密），提升 API 限额
@@ -395,6 +408,9 @@ fun MainScreen(
     val pan123ViewModel: Pan123AccountViewModel = viewModel(
         factory = Pan123AccountViewModel.Factory(pan123Repository)
     )
+    val pan115ViewModel: Pan115AccountViewModel = viewModel(
+        factory = Pan115AccountViewModel.Factory(pan115Repository)
+    )
     // 各平台「账号是否已登录」流：云盘浏览 VM 在启动期（未登录）init 加载会残留「请先登录…」错误态，
     // 首次登录成功后由 VM 监听该流自动重载根目录（见各 XxxCloudViewModel init）
     val quarkLoginState = remember { repository.observeAccount().map { it != null } }
@@ -403,6 +419,7 @@ fun MainScreen(
     val baiduLoginState = remember { baiduRepository.observeAccount().map { it != null } }
     val c139LoginState = remember { c139Repository.observeAccount().map { it != null } }
     val pan123LoginState = remember { pan123Repository.observeAccount().map { it != null } }
+    val pan115LoginState = remember { pan115Repository.observeAccount().map { it != null } }
     // 夸克云盘浏览：作为网盘 Tab 内容展示（非全屏），cookie 从数据库读取（避免 StateFlow 初始值为空的竞态）；
     // 下载前经 getFreshCookie 惰性刷新 __puus（修复 AlistGo/alist#830 下载 412）
     val quarkCloudViewModel: QuarkCloudViewModel = viewModel(
@@ -469,7 +486,16 @@ fun MainScreen(
             loginState = pan123LoginState
         )
     )
-    // 网盘空间详情：网盘页顶部「空间总览」展示 6 平台容量使用
+    // 115 网盘浏览：点击已登录的 115 卡片打开（Cookie 从数据库读取）
+    val pan115CloudViewModel: Pan115CloudViewModel = viewModel(
+        factory = Pan115CloudViewModel.Factory(
+            pan115Api,
+            { pan115Repository.getAccount()?.cookie },
+            downloadManager,
+            loginState = pan115LoginState
+        )
+    )
+    // 网盘空间详情：网盘页顶部「空间总览」展示各平台容量使用
     val driveQuotaViewModel: DriveQuotaViewModel = viewModel(
         factory = DriveQuotaViewModel.Factory(
             api, { repository.getAccount()?.cookie },
@@ -480,7 +506,8 @@ fun MainScreen(
             { xunleiRepository.getAccount()?.captchaToken },
             baiduApi, { baiduRepository.getAccount()?.cookie },
             c139Api, { c139Repository.getAccount()?.cookie },
-            pan123Api, { pan123Repository.getAccount()?.accessToken }
+            pan123Api, { pan123Repository.getAccount()?.accessToken },
+            pan115Api, { pan115Repository.getAccount()?.cookie }
         )
     )
     val xunleiResolveRepository = remember {
@@ -511,6 +538,9 @@ fun MainScreen(
             tokenProvider = { pan123Repository.getAccount()?.accessToken }
         )
     }
+    val pan115ResolveRepository = remember {
+        Pan115ResolveRepository(pan115Api)
+    }
     val resolveViewModel: ResolveViewModel = viewModel(
         factory = ResolveViewModel.Factory(
             repository,
@@ -525,6 +555,8 @@ fun MainScreen(
             c139ResolveRepository,
             pan123Repository,
             pan123ResolveRepository,
+            pan115Repository,
+            pan115ResolveRepository,
             downloadManager,
             db.bookmarkDao(),
             githubApi
@@ -542,12 +574,21 @@ fun MainScreen(
     val baiduAccount by baiduViewModel.baiduAccount.collectAsState()
     val c139Account by c139ViewModel.c139Account.collectAsState()
     val pan123Account by pan123ViewModel.pan123Account.collectAsState()
+    val pan115Account by pan115ViewModel.pan115Account.collectAsState()
 
     // 解析页发起下载后，自动切换到「下载」Tab
     LaunchedEffect(resolveViewModel.downloadStarted) {
         if (resolveViewModel.downloadStarted) {
             currentTab = MainTab.Download
             resolveViewModel.consumeDownloadStarted()
+        }
+    }
+
+    // 网盘更新无法自动化时，切回「解析」Tab 由用户手动处理
+    LaunchedEffect(resolveViewModel.updateFallbackToResolve) {
+        if (resolveViewModel.updateFallbackToResolve) {
+            currentTab = MainTab.Resolve
+            resolveViewModel.consumeUpdateFallbackToResolve()
         }
     }
 
@@ -655,6 +696,16 @@ fun MainScreen(
             viewModel = pan123ViewModel,
             onBack = { showPan123Login = false },
             onSaved = { showPan123Login = false }
+        )
+        return
+    }
+
+    // 115 登录页：全屏覆盖（WebView 打开官网登录，提取 115.com 域 Cookie）
+    if (showPan115Login) {
+        Pan115LoginScreen(
+            viewModel = pan115ViewModel,
+            onBack = { showPan115Login = false },
+            onSaved = { showPan115Login = false }
         )
         return
     }
@@ -793,6 +844,7 @@ fun MainScreen(
                                     c139CloudViewModel,
                                     ucCloudViewModel,
                                     pan123CloudViewModel,
+                                    pan115CloudViewModel,
                                     bookmarkViewModel = bookmarkViewModel,
                                     onOpenBookmarks = { showBookmarks = true }
                                 )
@@ -804,12 +856,14 @@ fun MainScreen(
                                     baiduAccount = baiduAccount,
                                     c139Account = c139Account,
                                     pan123Account = pan123Account,
+                                    pan115Account = pan115Account,
                                     quarkCloudViewModel = quarkCloudViewModel,
                                     ucCloudViewModel = ucCloudViewModel,
                                     xunleiCloudViewModel = xunleiCloudViewModel,
                                     baiduCloudViewModel = baiduCloudViewModel,
                                     c139CloudViewModel = c139CloudViewModel,
                                     pan123CloudViewModel = pan123CloudViewModel,
+                                    pan115CloudViewModel = pan115CloudViewModel,
                                     driveQuotaViewModel = driveQuotaViewModel,
                                     onQuarkLogin = { showQuarkLogin = true },
                                     onQuarkLogout = { viewModel.logout() },
@@ -824,6 +878,8 @@ fun MainScreen(
                                     onC139Logout = { c139ViewModel.logout() },
                                     onPan123Login = { showPan123Login = true },
                                     onPan123Logout = { pan123ViewModel.logout() },
+                                    onPan115Login = { showPan115Login = true },
+                                    onPan115Logout = { pan115ViewModel.logout() },
                                     githubHasToken = githubHasTokenState,
                                     onGitHubTokenClick = { showGitHubTokenDialog = true },
                                     // 已配置 Token 点卡片主体：用 GET /user 取 login，经统一解析入口进入该账号仓库列表
@@ -1034,11 +1090,11 @@ fun MainScreen(
                         SnackbarController.show("未找到 APK 下载链接")
                     }
                 },
-                // 网盘更新：Release 说明里的网盘链接直接丢给解析流程（与收藏页的「解析」同一路径）
+                // 网盘更新：优先自动「转存 → 取直链 → 下载」，不适合自动化时回落到解析页
                 onNetdiskUpdate = { link ->
                     showUpdateSheet = false
-                    currentTab = MainTab.Resolve
-                    resolveViewModel.startResolve(link, null)
+                    SnackbarController.show("正在准备更新包…")
+                    resolveViewModel.startUpdateDownload(link)
                 },
                 onLater = { showUpdateSheet = false },
                 onIgnore = {

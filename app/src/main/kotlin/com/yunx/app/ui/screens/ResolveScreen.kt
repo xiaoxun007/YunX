@@ -107,6 +107,7 @@ import com.yunx.app.ui.resolve.ShareDetailScreen
 import com.yunx.app.ui.viewmodel.BaiduCloudViewModel
 import com.yunx.app.ui.viewmodel.BookmarkViewModel
 import com.yunx.app.ui.viewmodel.C139CloudViewModel
+import com.yunx.app.ui.viewmodel.Pan115CloudViewModel
 import com.yunx.app.ui.viewmodel.Pan123CloudViewModel
 import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
 import com.yunx.app.ui.viewmodel.ResolveUiState
@@ -114,6 +115,7 @@ import com.yunx.app.ui.viewmodel.ResolveViewModel
 import com.yunx.app.ui.viewmodel.UCCoudViewModel
 import com.yunx.app.ui.viewmodel.XunleiCloudViewModel
 import com.yunx.app.ui.components.YunXLoading
+import com.yunx.app.ui.theme.ThemeController
 import com.yunx.app.ui.theme.effectsDefault
 import com.yunx.app.ui.theme.effectsFast
 import com.yunx.app.ui.theme.spatialDefault
@@ -139,6 +141,8 @@ fun ResolveScreen(
     ucCloudViewModel: UCCoudViewModel,
     /** 123 云盘浏览 ViewModel（123 分享转存目录选择用） */
     pan123CloudViewModel: Pan123CloudViewModel,
+    /** 115 网盘浏览 ViewModel（115 分享转存目录选择用） */
+    pan115CloudViewModel: Pan115CloudViewModel,
     /** 收藏 ViewModel：主页快捷方式（已添加到主页的收藏链接）数据源 */
     bookmarkViewModel: BookmarkViewModel,
     /** 打开「收藏网盘链接」页（主页快捷方式区块的「管理」入口） */
@@ -191,33 +195,42 @@ fun ResolveScreen(
 
     val lifecycleOwner = LocalLifecycleOwner.current
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    DisposableEffect(lifecycleOwner, clipboard) {
-        // 剪贴板变化立即检测（前台最灵敏，复制即提示）
-        val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
-            maybeSuggestClipboard()
-            // 部分 ROM 剪贴板内容写入有延迟，300ms 后重试一次
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+    // 设置页「自动识别剪贴板」：关闭后不注册监听、不读剪贴板，并立刻收起已有提示
+    val clipboardSuggestEnabled = ThemeController.clipboardSuggestEnabled
+    DisposableEffect(lifecycleOwner, clipboard, clipboardSuggestEnabled) {
+        if (!clipboardSuggestEnabled) {
+            clipboardSuggestion = null
+            onDispose { }
+        } else {
+            // 剪贴板变化立即检测（前台最灵敏，复制即提示）
+            val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
                 maybeSuggestClipboard()
-            }, 300)
-        }
-        clipboard.addPrimaryClipChangedListener(clipListener)
-        // 打开应用 / 从后台切回时检测
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) maybeSuggestClipboard()
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        // 冷启动兜底：组合完成立即检测一次（避免 ON_RESUME 早于 observer 注册导致漏检）
-        maybeSuggestClipboard()
-        onDispose {
-            clipboard.removePrimaryClipChangedListener(clipListener)
-            lifecycleOwner.lifecycle.removeObserver(observer)
+                // 部分 ROM 剪贴板内容写入有延迟，300ms 后重试一次
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    maybeSuggestClipboard()
+                }, 300)
+            }
+            clipboard.addPrimaryClipChangedListener(clipListener)
+            // 打开应用 / 从后台切回时检测
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) maybeSuggestClipboard()
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            // 冷启动兜底：组合完成立即检测一次（避免 ON_RESUME 早于 observer 注册导致漏检）
+            maybeSuggestClipboard()
+            onDispose {
+                clipboard.removePrimaryClipChangedListener(clipListener)
+                lifecycleOwner.lifecycle.removeObserver(observer)
+            }
         }
     }
 
     // Android 11 及以下：轻量轮询兜底（2s 一次）。
     // 部分 ROM（如 vivo）剪贴板监听不触发时仍能识别；Android 12+ 读剪贴板会弹系统提示，不轮询。
+    // 设置页关闭开关后同样不轮询（此时应用完全不读剪贴板）。
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-        LaunchedEffect(Unit) {
+        LaunchedEffect(clipboardSuggestEnabled) {
+            if (!clipboardSuggestEnabled) return@LaunchedEffect
             while (true) {
                 kotlinx.coroutines.delay(2000)
                 maybeSuggestClipboard()
@@ -260,6 +273,7 @@ fun ResolveScreen(
             c139CloudViewModel = c139CloudViewModel,
             ucCloudViewModel = ucCloudViewModel,
             pan123CloudViewModel = pan123CloudViewModel,
+            pan115CloudViewModel = pan115CloudViewModel,
             scrollBehavior = scrollBehavior,
             listState = detailListState,
             scrollPositions = detailScrollPositions,
@@ -803,6 +817,7 @@ private fun platformShortLabel(platform: String): String? = when (platform) {
     "BAIDU" -> "百度"
     "C139" -> "139"
     "PAN123" -> "123"
+    "PAN115" -> "115"
     "GITHUB" -> "GitHub"
     "GENERIC" -> "直链"
     else -> null
@@ -853,6 +868,7 @@ private fun platformLabel(platform: SharePlatform): String = when (platform) {
     SharePlatform.BAIDU -> "百度网盘"
     SharePlatform.C139 -> "139 网盘"
     SharePlatform.PAN123 -> "123云盘"
+    SharePlatform.PAN115 -> "115网盘"
     SharePlatform.GITHUB -> "GitHub"
     SharePlatform.GENERIC -> "文件直链"
 }

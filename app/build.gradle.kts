@@ -49,16 +49,10 @@ android {
         minSdk = 24
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
-        // 上游升 1.2.7 后 fork 后缀重计：1.2.7-gh1 = 27（1.2.6-gh19=26 为上一系列末次）；1.2.7-gh2 = 28；1.2.7-gh3 = 29
-        // 1.2.7-gh4 = 30：merge 上游 master（#114~#123，M3/更新检测/UI 打磨/镜像接线）
-        // 1.2.7-gh5 = 31：修复设置页「GitHub 下载镜像/网络代理」重复条目（merge 残留）
-        // 1.2.7-gh6 = 32：补回设置条目间缺失间隔；通知点击拉起应用并直达下载页（flags+tab extra）
-        // 1.2.7-gh7 = 33：merge 上游 #124 引导页三页式/#126 未登录看列表/#127 分享有效期中性码；
-        //                 fork 设置页线程数补 GitHub 条目 + 书签页平台标签补 GITHUB 分支
-        // 1.2.7-gh8 = 34：通知点击不跳转根治（singleTask）+ 加载中返回不退出 + 通用文件直链直接弹下载
-        // 1.2.7-gh9 = 35：下载入队自动滑到当前任务 + 下载页分享文件（互传）+ 修复直链拦截网盘解析顺序
-        versionCode = 35
-        versionName = "1.2.7-gh9"
+        // 上游升 1.2.8（#128~#133）后 fork 后缀重计：1.2.8-gh1 = 36（merge 上游 1.2.8，剔除 #130 QQ群/#131 fastlane）。
+        // 上游 1.2.7 系列历史：1.2.7-gh1 = 27 …… 1.2.7-gh9 = 35（下载入队自动滑动 + 下载页分享文件 + 直链拦截网盘解析顺序修复）
+        versionCode = 36
+        versionName = "1.2.8-gh1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
