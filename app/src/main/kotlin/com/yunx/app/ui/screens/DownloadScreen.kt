@@ -66,6 +66,7 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
@@ -104,6 +105,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import com.yunx.app.data.db.DownloadTaskEntity
 import com.yunx.app.data.download.DownloadStats
@@ -738,14 +740,26 @@ private fun DownloadSubTaskRow(
                             tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)
                         )
                     }
-                    DownloadTaskEntity.STATUS_COMPLETED -> IconButton(
-                        onClick = { openSavedFile(context, task.savePath) },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            Icons.Outlined.OpenInNew, contentDescription = "打开",
-                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
-                        )
+                    DownloadTaskEntity.STATUS_COMPLETED -> {
+                        IconButton(
+                            onClick = { openSavedFile(context, task.savePath) },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Outlined.OpenInNew, contentDescription = "打开",
+                                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        // 分享已下载文件（系统分享面板发送到微信/QQ/邮箱等，支持互传）
+                        IconButton(
+                            onClick = { shareSavedFile(context, task.savePath) },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Outlined.Share, contentDescription = "分享",
+                                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
                 // 删除
@@ -922,6 +936,10 @@ private fun DownloadTaskCard(
                             openSavedFile(context, task.savePath)
                         }) {
                             Icon(Icons.Outlined.OpenInNew, contentDescription = "打开", tint = MaterialTheme.colorScheme.primary)
+                        }
+                        // 分享已下载文件（系统分享面板发送，支持互传）
+                        IconButton(onClick = { shareSavedFile(context, task.savePath) }) {
+                            Icon(Icons.Outlined.Share, contentDescription = "分享", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }
@@ -1149,6 +1167,29 @@ private fun openSavedFile(context: android.content.Context, savePath: String) {
         context.startActivity(Intent.createChooser(intent, "打开文件"))
     }.onFailure {
         SnackbarController.show("无法打开该文件")
+    }
+}
+
+/** 分享已下载文件：ACTION_SEND 经 FileProvider 发到系统分享面板（微信/QQ/邮箱/蓝牙互传等） */
+private fun shareSavedFile(context: Context, savePath: String?) {
+    val path = savePath ?: return
+    val file = File(path)
+    if (!file.exists()) {
+        SnackbarController.show("文件不存在，无法分享")
+        return
+    }
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    val type = MimeTypeMap.getSingleton()
+        .getMimeTypeFromExtension(file.name.substringAfterLast('.', "").lowercase()) ?: "*/*"
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        putExtra(Intent.EXTRA_STREAM, uri)
+        type = type
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching {
+        context.startActivity(Intent.createChooser(intent, "分享文件"))
+    }.onFailure {
+        SnackbarController.show("没有可接收该文件的应用")
     }
 }
 
