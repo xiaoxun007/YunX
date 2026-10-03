@@ -80,7 +80,6 @@ import androidx.activity.compose.BackHandler
 import android.content.Intent
 import android.net.Uri
 import com.yunx.app.R
-import com.yunx.app.util.AppLinks
 
 /**
  * 关于云析页：应用介绍、支持平台、功能特性、技术栈与免责声明。
@@ -514,7 +513,7 @@ private fun CardIcon(icon: ImageVector) {
 private fun GitHubCard(context: android.content.Context) {
     Card(
         onClick = {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppLinks.GITHUB_REPO))
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/CYQawa/YunX"))
             context.startActivity(intent)
         },
         modifier = Modifier.fillMaxWidth(),
@@ -551,7 +550,7 @@ private fun GitHubCard(context: android.content.Context) {
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = AppLinks.GITHUB_REPO_DISPLAY,
+                    text = "github.com/CYQawa/YunX",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
