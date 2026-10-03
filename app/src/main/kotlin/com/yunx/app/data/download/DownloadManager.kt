@@ -259,7 +259,9 @@ class DownloadManager(
     /** 锁屏后保持下载开关（开启时获取 WakeLock 维持 Wi-Fi/CPU） */
     private val keepWhenLockedProvider: () -> Boolean = { true },
     /** 通知栏显示下载速度开关（false 时仅显示通知，隐藏速度） */
-    private val showSpeedProvider: () -> Boolean = { true }
+    private val showSpeedProvider: () -> Boolean = { true },
+    /** 镜像竞速候选前缀列表提供者（从设置读取，每行一个）；默认空=不额外加候选 */
+    private val mirrorCandidatesProvider: () -> List<String> = { emptyList() }
 ) {
     private val credentialCipher: CredentialCipher = AndroidKeystoreCredentialCipher()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -831,7 +833,9 @@ class DownloadManager(
             // 普通直连任务（无镜像）：单通道探测，行为不变
             probedSize = downloader.getTotalSize(task.url, headers)
         } else {
-            val channels = com.yunx.app.data.update.UpdateChecker.mirrorChannels(task.url, directUrl)
+            val channels = com.yunx.app.data.update.UpdateChecker.mirrorChannels(
+                task.url, directUrl, mirrorCandidatesProvider()
+            )
             val results = speedTestChannels(channels, headers)
             val ok = results.filter { it.size != null }.sortedBy { it.latencyMs }
             if (ok.isEmpty()) {

@@ -64,6 +64,7 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Power
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Restore
+import androidx.compose.material.icons.outlined.Route
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SystemUpdate
@@ -236,6 +237,9 @@ fun SettingsScreen(
     // GitHub 下载镜像前缀：null/空 = 使用内置默认（UpdateChecker.MIRROR_PREFIX）
     var githubMirror by remember { mutableStateOf(settingsRepo.githubMirrorPrefix) }
     var showMirrorDialog by remember { mutableStateOf(false) }
+    // 镜像竞速候选前缀（每行一个，顺序即竞速顺序）
+    var mirrorCandidates by remember { mutableStateOf(settingsRepo.mirrorCandidates) }
+    var showMirrorCandidatesDialog by remember { mutableStateOf(false) }
     // 网络代理：本地状态驱动副标题，弹窗内使用临时变量编辑
     var proxyEnabled by remember { mutableStateOf(settingsRepo.proxyEnabled) }
     var proxyHost by remember { mutableStateOf(settingsRepo.proxyHost) }
@@ -540,6 +544,15 @@ fun SettingsScreen(
                 ?.let { "已自定义：$it" }
                 ?: "默认：${UpdateChecker.MIRROR_PREFIX}",
             onClick = { showMirrorDialog = true }
+        )
+
+        SettingsItem(
+            icon = Icons.Outlined.Route,
+            shape = listGroupShape(ListGroupPos.MIDDLE),
+            title = "镜像竞速候选",
+            description = mirrorCandidates.split("\n").count { it.isNotBlank() }
+                .let { "$it 个候选（顺序即竞速顺序）" },
+            onClick = { showMirrorCandidatesDialog = true }
         )
 
         Spacer(modifier = Modifier.height(ListGroupGap))
@@ -1155,6 +1168,50 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showMirrorDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // 镜像竞速候选前缀编辑弹窗（每行一个，顺序即竞速顺序）
+    if (showMirrorCandidatesDialog) {
+        var candidatesInput by remember { mutableStateOf(mirrorCandidates) }
+        AlertDialog(
+            onDismissRequest = { showMirrorCandidatesDialog = false },
+            title = { Text("镜像竞速候选") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = candidatesInput,
+                        onValueChange = { candidatesInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("候选前缀（每行一个）") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                    )
+                    Text(
+                        text = "每行一个镜像前缀 URL，顺序即竞速顺序；留空恢复默认列表。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        // 规范化：每行 trim、去空行、补 / 结尾
+                        val normalized = candidatesInput
+                            .split("\n")
+                            .map { it.trim() }
+                            .filter { it.isNotBlank() }
+                            .joinToString("\n") { if (it.endsWith("/")) it else "$it/" }
+                        settingsRepo.mirrorCandidates = normalized
+                        mirrorCandidates = normalized
+                        showMirrorCandidatesDialog = false
+                        SnackbarController.show("镜像竞速候选已更新")
+                    }
+                ) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMirrorCandidatesDialog = false }) { Text("取消") }
             }
         )
     }

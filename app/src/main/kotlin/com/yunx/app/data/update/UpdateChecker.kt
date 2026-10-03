@@ -51,31 +51,15 @@ object UpdateChecker {
     fun mirrorUrl(url: String, prefix: String = MIRROR_PREFIX): String = prefix + url
 
     /**
-     * 镜像竞速候选前缀（任务准备阶段与「当前配置前缀 + 直连」并行测速，选最快者作主通道）。
-     * 实测（沙箱服务器网络，测试文件 https://raw.githubusercontent.com/CYQawa/YunX/master/README.md，
-     * 直连基线 0.53s / md5=dd51467e…；用户设备国内可用性可能不同，以本次实测为准写死）：
-     *   gh-proxy.com  0.84s（fmtB，双格式均 200 且 md5 一致）
-     *   ghproxy.net   0.55s（fmtA，双格式均 200 且 md5 一致）
-     *   ghfast.top    1.63s（fmtB，双格式均 200 且 md5 一致）
-     * 当前配置前缀 [MIRROR_PREFIX]=cdn.gh-proxy.org（实测 3.37s）排竞速第一位（由调用方传入）。
-     * 已排除（仅记录、不参与竞速）：mirror.ghproxy.com（双格式 15s 超时 HTTP 000）、
-     *   gh.ddlc.top（双格式 HTTP 429 限流）、ghproxy.cc（双格式连接失败 HTTP 000）。
-     */
-    val MIRROR_CANDIDATE_PREFIXES = listOf(
-        "https://gh-proxy.com/",
-        "https://ghproxy.net/",
-        "https://ghfast.top/",
-    )
-
-    /**
-     * 构建竞速通道 URL 列表：直连 + 当前配置镜像 + 内置候选镜像，按 URL 去重（保持顺序）。
+     * 构建竞速通道 URL 列表：直连 + 当前配置镜像 + 可配置候选镜像（[candidatePrefixes]），按 URL 去重（保持顺序）。
      * [directUrl] 为 GitHub release 原始直链；[configuredMirrorUrl] 为设置页配置前缀拼出的镜像 URL。
+     * 候选前缀列表由调用方从 SettingsRepository.mirrorCandidates 读取（点用点读）。
      */
-    fun mirrorChannels(directUrl: String, configuredMirrorUrl: String): List<String> {
+    fun mirrorChannels(directUrl: String, configuredMirrorUrl: String, candidatePrefixes: List<String>): List<String> {
         val urls = linkedSetOf<String>()
         urls += directUrl                       // 直连（基准通道）
         urls += configuredMirrorUrl            // 当前配置前缀（用户可自定义）
-        MIRROR_CANDIDATE_PREFIXES.forEach { prefix -> urls += prefix + directUrl }
+        candidatePrefixes.forEach { prefix -> urls += prefix + directUrl }
         return urls.toList()
     }
 

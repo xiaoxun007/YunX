@@ -171,6 +171,16 @@ class SettingsRepository(context: Context) {
             prefs.edit().putString("github_mirror_prefix", value).apply()
         }
 
+    /**
+     * 镜像竞速候选前缀列表（每行一个，顺序即竞速顺序）。默认见 [DEFAULT_MIRROR_CANDIDATES]。
+     * 运行时由 UpdateChecker.mirrorChannels 读取，与 githubMirrorPrefix 拼直链后并行测速。
+     */
+    var mirrorCandidates: String
+        get() = prefs.getString("mirror_candidates", DEFAULT_MIRROR_CANDIDATES) ?: DEFAULT_MIRROR_CANDIDATES
+        set(value) {
+            prefs.edit().putString("mirror_candidates", value.trim()).apply()
+        }
+
     /** 是否启用 HTTP 代理（默认关闭，直连） */
     var proxyEnabled: Boolean
         get() = prefs.getBoolean("proxy_enabled", false)
@@ -207,6 +217,15 @@ class SettingsRepository(context: Context) {
         const val DEFAULT_MAX_CONCURRENT_DOWNLOADS = 1
         const val DEFAULT_DOWNLOAD_RETRY_COUNT = 3
         const val DEFAULT_PROXY_PORT = 7890
+
+        /**
+         * 默认镜像竞速候选前缀（每行一个，顺序即竞速顺序）：当前默认镜像 + 实测可用的 3 个公共加速前缀。
+         */
+        const val DEFAULT_MIRROR_CANDIDATES =
+            "https://cdn.gh-proxy.org/\n" +
+            "https://gh-proxy.com/\n" +
+            "https://ghproxy.net/\n" +
+            "https://ghfast.top/"
 
         /** 默认主题种子色：Material Blue（与内置默认方案一致） */
         const val DEFAULT_SEED_COLOR = 0xFF415F91L

@@ -367,7 +367,11 @@ fun MainScreen(
             retryCountProvider = { settings.downloadRetryCount },
             // 锁屏保持下载 / 通知栏速度开关
             keepWhenLockedProvider = { settings.keepDownloadWhenLocked },
-            showSpeedProvider = { settings.notificationShowSpeed }
+            showSpeedProvider = { settings.notificationShowSpeed },
+            // 镜像竞速候选前缀（每行一个，顺序即竞速顺序；点用点读）
+            mirrorCandidatesProvider = {
+                settings.mirrorCandidates.split("\n").map { it.trim() }.filter { it.isNotBlank() }
+            }
         )
     }
     // Android 9- 写公共 Download 需要 WRITE_EXTERNAL_STORAGE 运行时授权：
