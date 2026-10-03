@@ -55,8 +55,9 @@ android {
         // 1.2.7-gh6 = 32：补回设置条目间缺失间隔；通知点击拉起应用并直达下载页（flags+tab extra）
         // 1.2.7-gh7 = 33：merge 上游 #124 引导页三页式/#126 未登录看列表/#127 分享有效期中性码；
         //                 fork 设置页线程数补 GitHub 条目 + 书签页平台标签补 GITHUB 分支
-        versionCode = 33
-        versionName = "1.2.7-gh7"
+        // 1.2.7-gh8 = 34：通知点击不跳转根治（singleTask）+ 加载中返回不退出 + 通用文件直链直接弹下载
+        versionCode = 34
+        versionName = "1.2.7-gh8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
