@@ -30,6 +30,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -44,6 +45,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -96,6 +98,7 @@ import androidx.compose.ui.unit.dp
 import com.yunx.app.data.db.BookmarkEntity
 import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.ui.rememberGlobalSnackbarHostState
+import com.yunx.app.ui.components.DoubleTapScrollToTopArea
 import com.yunx.app.ui.viewmodel.BookmarkViewModel
 import com.yunx.app.ui.theme.effectsDefault
 import com.yunx.app.ui.theme.effectsFast
@@ -126,6 +129,8 @@ fun BookmarkScreen(
 
     // null 表示「全部」
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
+    // 书签列表滚动状态（顶部双击回顶用）
+    val bookmarkListState = rememberLazyListState()
     var showAddDialog by remember { mutableStateOf(false) }
     var editingBookmark by remember { mutableStateOf<BookmarkEntity?>(null) }
     var menuBookmark by remember { mutableStateOf<BookmarkEntity?>(null) }
@@ -161,10 +166,11 @@ fun BookmarkScreen(
             )
         }
     ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
         LazyColumn(
+            state = bookmarkListState,
             modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
+                .fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -190,6 +196,12 @@ fun BookmarkScreen(
                     )
                 }
             }
+        }
+            // 顶部热区：双击标题栏/状态栏下方区域回顶（单击透传，不影响分类筛选与列表点击）
+            DoubleTapScrollToTopArea(
+                state = bookmarkListState,
+                modifier = Modifier.align(Alignment.TopStart)
+            )
         }
     }
 

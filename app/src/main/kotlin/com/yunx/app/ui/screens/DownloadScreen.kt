@@ -109,6 +109,7 @@ import com.yunx.app.data.db.DownloadTaskEntity
 import com.yunx.app.data.download.DownloadStats
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.ui.viewmodel.DownloadViewModel
+import com.yunx.app.ui.components.DoubleTapScrollToTopArea
 import com.yunx.app.ui.components.FileNameText
 import com.yunx.app.ui.components.YunXWavyProgress
 import com.yunx.app.ui.theme.effectsDefault
@@ -251,6 +252,11 @@ fun DownloadScreen(
             }
         }
 
+        // 顶部热区：双击标题栏/状态栏下方区域回顶（单击透传，不影响批量栏按钮与列表滚动）
+        DoubleTapScrollToTopArea(
+            state = listState,
+            modifier = Modifier.align(Alignment.TopStart)
+        )
         }
 
     if (showAddDialog) {

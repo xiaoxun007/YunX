@@ -84,6 +84,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
+import com.yunx.app.ui.components.DoubleTapScrollToTopArea
 import com.yunx.app.ui.components.ScrollToTopButton
 import com.yunx.app.ui.components.YunXLoading
 import com.yunx.app.ui.resolve.DownloadLinkDialog
@@ -430,6 +431,11 @@ fun CloudDriveScreen(
                         )
                     )
                 }
+                // 顶部热区：双击标题栏/状态栏下方区域回顶（单击透传，不影响返回/搜索与列表滚动）
+                DoubleTapScrollToTopArea(
+                    state = listState,
+                    modifier = Modifier.align(Alignment.TopStart)
+                )
             }
         }
     }

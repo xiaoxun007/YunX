@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MoreVert
@@ -88,6 +89,7 @@ import com.yunx.app.ui.viewmodel.Pan123CloudViewModel
 import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
 import com.yunx.app.ui.viewmodel.UCCoudViewModel
 import com.yunx.app.ui.viewmodel.XunleiCloudViewModel
+import com.yunx.app.ui.components.DoubleTapScrollToTopArea
 import com.yunx.app.ui.components.YunXWavyProgress
 import com.yunx.app.ui.theme.effectsDefault
 import com.yunx.app.ui.theme.effectsFast
@@ -256,6 +258,8 @@ fun DriveScreen(
     }
     // 下拉刷新状态：绑定空间配额加载中状态
     val isRefreshing by driveQuotaViewModel.loading.collectAsState()
+    // 网盘入口区账号列表滚动状态（顶部双击回顶用）
+    val driveListState = rememberLazyListState()
 
     // 账号列表 ↔ 夸克云盘 ↔ UC 云盘 ↔ 迅雷云盘 ↔ 百度云盘 ↔ 139 云盘 ↔ 123 云盘：平滑过渡（淡入 + 轻微缩放，不僵硬）
     AnimatedContent(
@@ -324,6 +328,7 @@ fun DriveScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 LazyColumn(
+                state = driveListState,
                 modifier = modifier
                     .fillMaxSize()
                     .nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -462,6 +467,11 @@ fun DriveScreen(
                     DriveAccountCard(account = account)
                 }
             }
+            // 顶部热区：双击标题栏/状态栏下方区域回顶（单击透传，不影响卡片点击与列表滚动）
+            DoubleTapScrollToTopArea(
+                state = driveListState,
+                modifier = Modifier.align(Alignment.TopStart)
+            )
             }
         }
     }
