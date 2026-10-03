@@ -456,12 +456,12 @@ fun BaiduCloudScreen(
                             )
                         )
                     }
-                }
                 // 顶部热区：双击标题栏/状态栏下方区域回顶（单击透传，不影响返回/搜索与列表滚动）
                 DoubleTapScrollToTopArea(
                     state = listState,
                     modifier = Modifier.align(Alignment.TopStart)
                 )
+                }
             }
         }
     }
