@@ -1179,11 +1179,11 @@ private fun shareSavedFile(context: Context, savePath: String?) {
         return
     }
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    val type = MimeTypeMap.getSingleton()
+    val mime = MimeTypeMap.getSingleton()
         .getMimeTypeFromExtension(file.name.substringAfterLast('.', "").lowercase()) ?: "*/*"
     val intent = Intent(Intent.ACTION_SEND).apply {
         putExtra(Intent.EXTRA_STREAM, uri)
-        type = type
+        type = mime
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching {
