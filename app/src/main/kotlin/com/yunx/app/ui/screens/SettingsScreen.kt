@@ -140,6 +140,8 @@ private val threadPlatforms = listOf(
     ThreadPlatform(DownloadPlatform.PAN123, "123 云盘"),
     // GitHub 仓库/Release 下载（fork 特性）：未单独设置时跟随全局默认（32）
     ThreadPlatform(DownloadPlatform.GITHUB, "GitHub"),
+    // 通用文件直链（解析页直链下载，fork 特性）：独立线程键，不与"通用线程"混用
+    ThreadPlatform(DownloadPlatform.GENERIC, "文件直链"),
 )
 
 /** 跳转系统「应用通知」设置页（Android 8+ 通用入口；失败时退回应用详情页） */

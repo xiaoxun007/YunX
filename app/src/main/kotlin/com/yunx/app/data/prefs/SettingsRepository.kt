@@ -48,8 +48,13 @@ class SettingsRepository(context: Context) {
     }
 
     private fun prefsKey(platform: String): String =
-        if (platform.isBlank() || platform == DownloadPlatform.GENERIC) "download_threads"
-        else "download_threads_$platform"
+        when {
+            // 手动添加/应用更新等空平台 → 通用键
+            platform.isBlank() -> "download_threads"
+            // 通用文件直链（解析页直链下载）→ 独立键，不随"通用线程"走
+            platform == DownloadPlatform.GENERIC -> "download_threads_generic"
+            else -> "download_threads_$platform"
+        }
 
     /** 自定义下载保存目录（SAF tree Uri，content://...）；null/空 = 系统默认 Download 目录 */
     var downloadDirUri: String?
