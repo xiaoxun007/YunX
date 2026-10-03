@@ -621,6 +621,8 @@ class ResolveViewModel(
                     return@launch
                 }
                 var okCount = 0
+                // 记录最后入队任务 id：下载页切换定位到该任务（与单文件/文件夹批量「最后入队项」语义一致）
+                var lastId: Long? = null
                 for ((index, t) in tasks.withIndex()) {
                     if (batchCancelRequested) {
                         downloadError = "已中断批量下载"
@@ -628,7 +630,7 @@ class ResolveViewModel(
                     }
                     batchProgress = "${index + 1}/${tasks.size}"
                     runCatching {
-                        downloadManager.enqueue(
+                        val id = downloadManager.enqueue(
                             url = UpdateChecker.mirrorUrl(t.first, prefix),
                             fileName = t.second,
                             size = t.third,
@@ -636,9 +638,12 @@ class ResolveViewModel(
                             // 镜像挂掉时回退原始直连（t.first 为未镜像的 GitHub 直链）
                             fallbackUrl = t.first
                         )
+                        lastId = id
                         okCount++
                     }
                 }
+                // 循环结束后再写定位：okCount>0 时 lastId 即最后一个成功入队项
+                if (lastId != null) pendingScrollTaskId = lastId
                 if (!batchCancelRequested) {
                     downloadError = if (okCount > 0) "已加入 $okCount 个下载任务" else "下载失败"
                     if (okCount > 0) downloadStarted = true
