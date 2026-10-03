@@ -141,15 +141,14 @@ object GitHubLinkParser {
         return null
     }
 
-    /** 把 Unicode 连字符家族统一替换为 ASCII '-'；无变化时返回原串 */
+    /**
+     * 把 Unicode 连字符家族统一替换为 ASCII '-'；无变化时返回原串。
+     * 用 \p{Pd} 全类别（与上面 NAME 字符类同一覆盖范围），并显式补 U+2212 MINUS SIGN——
+     * 它的 Unicode 类别是 Sm（数学符号），不在 \p{Pd} 内，但属复制污染常见形态，必须一并规范化。
+     * \p{Pd} 含 ASCII '-' 本身，替换为 '-' 是恒等操作，不影响正常链接。
+     */
     private fun normalizeDashesToAscii(url: String): String {
-        val chars = charArrayOf(
-            '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015',
-            '\u2212', '\ufe58', '\ufe63', '\uff0d'
-        )
-        var out = url
-        for (c in chars) out = out.replace(c, '-')
-        return out
+        return url.replace(Regex("[\\p{Pd}\\u2212]"), "-")
     }
 
     /** 从路径段取最后一段作为文件名，去掉 query/fragment；空则返回 null */
