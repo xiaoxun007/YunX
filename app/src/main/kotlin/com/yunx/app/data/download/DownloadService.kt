@@ -232,6 +232,7 @@ class DownloadService : Service() {
             linger: Boolean
         ): Notification {
             // 结果通知同样带 flags + open_tab extra：点击后直达下载页
+            // requestCode=1 与进度通知（0）区分，避免系统按相同 key 复用/覆盖 PendingIntent
             val notifyIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -239,7 +240,7 @@ class DownloadService : Service() {
                 putExtra("open_tab", "download")
             }
             val contentIntent = PendingIntent.getActivity(
-                context, 0, notifyIntent, PendingIntent.FLAG_IMMUTABLE
+                context, 1, notifyIntent, PendingIntent.FLAG_IMMUTABLE
             )
             val title = if (success) "下载完成" else "下载失败"
             val text = if (success) fileName else if (error.isBlank()) fileName else "$fileName：$error"
