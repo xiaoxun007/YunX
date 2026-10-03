@@ -354,7 +354,10 @@ fun MainScreen(
         DownloadManager(
             context = context,
             dao = db.downloadTaskDao(),
-            downloader = ChunkDownloader({ HttpClients.downloadClient() }),
+            downloader = ChunkDownloader({ HttpClients.downloadClient() }).also {
+                // 镜像竞速探测用短超时 client（connect≈8s/read≈10s/不自动重试）
+                it.probeClientProvider = { HttpClients.probeClient() }
+            },
             threadProvider = { platform -> settings.downloadThreadsFor(platform) },
             // 自定义下载保存目录（SAF tree Uri），设置页可选，动态生效
             saveDirProvider = { settings.downloadDirUri },

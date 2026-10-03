@@ -76,6 +76,26 @@ data class DownloadStats(
 
 private const val TAG = "YunX-DL"
 
+/** 镜像竞速测速结果缓存 TTL（毫秒）：15 分钟，可调。TTL 内复用上次测速排序，过期后下次任务前重测。 */
+private const val SPEED_TEST_TTL_MS = 15 * 60 * 1000L
+
+/** 单通道测速结果（缓存用）：成功=success/latencyMs/size；失败=reason。 */
+private data class SpeedSample(
+    val success: Boolean,
+    val latencyMs: Long,
+    val size: Long?,
+    val reason: String?,
+    val atMs: Long,
+)
+
+/** 单通道竞速探测结果：size!=null 即可用；latencyMs 为 206 响应耗时（毫秒）。 */
+private data class ChannelProbe(
+    val url: String,
+    val size: Long?,
+    val latencyMs: Long,
+    val reason: String?,
+)
+
 /** 单文件 Range 分片的安全并发上限。迅雷等 CDN 对单文件并发 Range 有阈值，
  *  超过约 8 个并发会把多余请求降级为 200 整文件（忽略 Range），
  *  进而触发整任务回退单流、速度暴跌。压在安全上限内，所有分片都能稳定拿到 206。 */
@@ -436,6 +456,12 @@ class DownloadManager(
     /** 镜像主 URL 的回退直连（仅 GitHub 等显式传入）；主 URL 探测失败时整任务切到此 URL 重下 */
     private val taskFallbackUrls = ConcurrentHashMap<Long, String>()
 
+    /**
+     * 镜像/直连竞速测速结果缓存：channelUrl -> [SpeedSample]。
+     * TTL 内复用上次测速排序，过期后下一次任务启动前重新测速；同一任务只测速一次。
+     */
+    private val speedCache = ConcurrentHashMap<String, SpeedSample>()
+
     /** 任务开始时间（毫秒）：完成时计算平均速度用（暂停/恢复会重置，表示最近一次运行段均值） */
     private val taskStartTimes = ConcurrentHashMap<Long, Long>()
 
@@ -758,6 +784,28 @@ class DownloadManager(
         }
     }
 
+    /**
+     * 镜像竞速测速：对所有通道并行发起轻量 Range=0-0 探测（短超时 client）。
+     * TTL 内直接复用 [speedCache] 上次结果；过期或未缓存则现测并写缓存。
+     * 同一任务只调用一次（任务准备阶段）。
+     */
+    private suspend fun speedTestChannels(channels: List<String>, headers: Map<String, String>): List<ChannelProbe> = coroutineScope {
+        channels.map { url ->
+            async {
+                val cached = speedCache[url]
+                val now = System.currentTimeMillis()
+                if (cached != null && now - cached.atMs < SPEED_TEST_TTL_MS) {
+                    return@async ChannelProbe(url, cached.size, cached.latencyMs, cached.reason)
+                }
+                val t0 = System.currentTimeMillis()
+                val (size, reason) = downloader.probeMirror(url, headers)
+                val latency = System.currentTimeMillis() - t0
+                speedCache[url] = SpeedSample(size != null, latency, size, reason, System.currentTimeMillis())
+                ChannelProbe(url, size, latency, reason)
+            }
+        }.awaitAll()
+    }
+
     private suspend fun runTask(id: Long, headers: Map<String, String>) {
         // 协程已被取消（暂停/删除）：直接退出，不写状态
         if (!isTaskActive()) return
@@ -774,14 +822,31 @@ class DownloadManager(
         }
 
         // 总大小以服务器探测为准（Range0-0 的 Content-Range 是真实总大小），
-        // 避免各平台传入的 size 与实际不符导致分片区间错误 → 文件截断/膨胀损坏
-        // 镜像主 URL 探测失败且带回退直连时（GitHub 下载），整任务切到原始直连重下，避免镜像挂掉整任务失败
-        val fallbackUrl = taskFallbackUrls[id]
-        var probedSize = downloader.getTotalSize(task.url, headers)
-        if (probedSize == null && !fallbackUrl.isNullOrBlank()) {
-            Log.w(TAG, "runTask: id=$id 镜像主 URL 不可达，回退原始直连下载")
-            task = task.copy(url = fallbackUrl)
+        // 避免各平台传入的 size 与实际不符导致分片区间错误 → 文件截断/膨胀损坏。
+        // 镜像任务：对「直连 + 当前配置镜像 + 内置候选镜像」并行竞速测速（短超时 ~10s），
+        // 选最快通道作主 URL、次快通道留作 fallback；全程静默，仅全通道失败才抛错写 errorMsg。
+        val directUrl = taskFallbackUrls[id]
+        val probedSize: Long?
+        if (directUrl.isNullOrBlank()) {
+            // 普通直连任务（无镜像）：单通道探测，行为不变
             probedSize = downloader.getTotalSize(task.url, headers)
+        } else {
+            val channels = com.yunx.app.data.update.UpdateChecker.mirrorChannels(task.url, directUrl)
+            val results = speedTestChannels(channels, headers)
+            val ok = results.filter { it.size != null }.sortedBy { it.latencyMs }
+            if (ok.isEmpty()) {
+                // 全通道失败：message 即 errorMsg，如实写清各通道原因
+                val directPart = results.firstOrNull { it.url == directUrl }
+                    ?.let { "直连失败：${it.reason ?: "未知"}" } ?: "直连失败：未知"
+                val mirrorPart = results.filter { it.url != directUrl }.joinToString("；") {
+                    "${LogRedactor.url(it.url)} ${it.reason ?: "不可用"}"
+                }
+                throw java.io.IOException("$directPart；镜像失败：$mirrorPart")
+            }
+            task = task.copy(url = ok[0].url)
+            probedSize = ok[0].size
+            // 次快通道保留为 fallbackUrl（主源异常时的回退目标）；仅一个可用通道则清空
+            if (ok.size >= 2) taskFallbackUrls[id] = ok[1].url else taskFallbackUrls.remove(id)
         }
         val total = probedSize
             ?: taskSizes[id]?.takeIf { it > 0 }

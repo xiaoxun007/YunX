@@ -85,6 +85,10 @@ class ChunkDownloader(private val clientProvider: () -> OkHttpClient) {
     /** 每次请求动态获取全局下载客户端（忽略 SSL 开关切换即时生效） */
     private val client get() = clientProvider()
 
+    /** 镜像竞速探测 client：短超时、不自动重试（[HttpClients.probeClient]）；默认同下载 client */
+    var probeClientProvider: () -> OkHttpClient = clientProvider
+    private val probeClient get() = probeClientProvider()
+
     /** 任务 id → 该任务当前所有分片请求 */
     private val activeCalls = ConcurrentHashMap<Long, MutableSet<Call>>()
     private fun newCallSet(): MutableSet<Call> =
@@ -132,6 +136,43 @@ class ChunkDownloader(private val clientProvider: () -> OkHttpClient) {
                         }
                     }
                 }.getOrNull()
+            } finally { cancelHandle?.dispose() }
+        }
+
+    // ---------- 镜像竞速短探测 ----------
+
+    /**
+     * 镜像/直连竞速轻量探测：单次 `Range: bytes=0-0`，走 [probeClient]（connect≈8s/read≈10s/不自动重试）。
+     * 返回 `(size, reason)`：探测成功时 size=Content-Range 总大小、reason=null；失败时 size=null、reason 为
+     * 「超时 / HTTP xxx / HTML 页面 / 连接失败」等人类可读原因（供失败 errorMsg 拼接）。**全程静默，不打 DB。**
+     */
+    suspend fun probeMirror(url: String, headers: Map<String, String>): Pair<Long?, String> =
+        withContext(DownloadManager.chunkIoDispatcher) {
+            val request = Request.Builder()
+                .url(url)
+                .header("Range", "bytes=0-0")
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
+                .get().build()
+            val call = probeClient.newCall(request)
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+            try {
+                call.execute().use { response ->
+                    val ct = response.header("Content-Type").orEmpty()
+                    when {
+                        ct.contains("text/html", ignoreCase = true) -> null to "返回 HTML 页面"
+                        !response.isSuccessful -> null to "HTTP ${response.code}"
+                        response.code != 206 -> null to "未返回 206（code=${response.code}）"
+                        else -> {
+                            val range = HttpRangePolicy.parse(response.header("Content-Range"))
+                            if (range != null && range.start == 0L && range.end == 0L) range.total to null
+                            else null to "Content-Range 异常"
+                        }
+                    }
+                }
+            } catch (e: java.net.SocketTimeoutException) {
+                null to "连接超时"
+            } catch (e: java.io.IOException) {
+                null to (e.message ?: "连接失败")
             } finally { cancelHandle?.dispose() }
         }
 

@@ -45,6 +45,10 @@ object HttpClients {
     @Volatile
     private var downloadCache: OkHttpClient? = null
 
+    /** 镜像竞速探测专用客户端缓存：短超时、不自动重试 */
+    @Volatile
+    private var probeCache: OkHttpClient? = null
+
     /** 当前生效的 HTTP 代理主机；null 表示直连 */
     @Volatile
     private var proxyHost: String? = null
@@ -94,12 +98,26 @@ object HttpClients {
     }
 
     /**
+     * 镜像竞速探测专用客户端：connect≈8s / read≈10s，[retryOnConnectionFailure]=false。
+     * 只用于任务准备阶段对「直连 + 各镜像」做轻量 Range=0-0 测速；**不参与实际分片下载**，
+     * 因此超时短、不自动重试（防 connect 超时被 OkHttp 翻倍成 ~30s）。下载主体仍走 [downloadClient]。
+     */
+    fun probeClient(): OkHttpClient {
+        probeCache?.let { return it }
+        synchronized(lock) {
+            probeCache?.let { return it }
+            return buildProbe().also { probeCache = it }
+        }
+    }
+
+    /**
      * 释放两个客户端的空闲连接（socket + Conscrypt/HTTP2 缓冲），由 Application.onTrimMemory
      * 在系统内存压力下调用。只影响空闲连接，进行中的请求不受影响；任何异常都不得抛给调用方。
      */
     fun evictIdleConnections() {
         runCatching { apiCache?.connectionPool?.evictAll() }
         runCatching { downloadCache?.connectionPool?.evictAll() }
+        runCatching { probeCache?.connectionPool?.evictAll() }
     }
 
     private fun buildApi(): OkHttpClient {
@@ -147,6 +165,19 @@ object HttpClients {
             .retryOnConnectionFailure(true)
             .apply {
                 // 配置了有效代理时注入；否则保持默认直连，行为与改动前完全一致
+                currentProxy()?.let { proxy -> proxy(proxy) }
+            }
+            .build()
+    }
+
+    /** 镜像竞速探测 client：短超时 + 不自动重试（见 [probeClient] 注释） */
+    private fun buildProbe(): OkHttpClient {
+        return OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(8, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(false)
+            .apply {
                 currentProxy()?.let { proxy -> proxy(proxy) }
             }
             .build()
