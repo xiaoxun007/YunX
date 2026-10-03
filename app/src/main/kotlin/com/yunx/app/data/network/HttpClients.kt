@@ -57,6 +57,14 @@ object HttpClients {
     @Volatile
     private var proxyPort: Int = 0
 
+    /** 代理认证用户名（空串=无认证）。fork 内部明文存储，不落日志。 */
+    @Volatile
+    private var proxyUser: String = ""
+
+    /** 代理认证密码（空串=无认证）。fork 内部明文存储，不落日志。 */
+    @Volatile
+    private var proxyPass: String = ""
+
     /**
      * 配置全局 HTTP 代理。host 为 null 或 port 不在 1-65535 时视为不使用代理（直连）。
      * 调用后清空已构建的客户端缓存，使下次获取时按新代理重建，立即生效。
@@ -69,6 +77,21 @@ object HttpClients {
             // 使既有客户端失效：下次 apiClient()/downloadClient() 时重建，代理立即生效
             apiCache = null
             downloadCache = null
+            probeCache = null
+        }
+    }
+
+    /**
+     * 配置代理认证凭据（明文，fork 内部）。user/pass 均空串表示无认证。
+     * 与 [setProxy] 独立调用，同样使既有客户端重建生效。
+     */
+    fun setProxyAuth(user: String, pass: String) {
+        synchronized(lock) {
+            proxyUser = user
+            proxyPass = pass
+            apiCache = null
+            downloadCache = null
+            probeCache = null
         }
     }
 
@@ -77,6 +100,26 @@ object HttpClients {
         val host = proxyHost ?: return null
         if (proxyPort !in 1..65535) return null
         return Proxy(Proxy.Type.HTTP, InetSocketAddress(host, proxyPort))
+    }
+
+    /**
+     * 代理认证器：收到 407 时回 `Proxy-Authorization: Basic base64(user:pass)`。
+     * user/pass 均空串时返回 null（不挂认证，行为与改动前一致）。
+     */
+    private fun proxyAuthenticator(): okhttp3.Authenticator? {
+        val user = proxyUser
+        val pass = proxyPass
+        if (user.isEmpty() && pass.isEmpty()) return null
+        return okhttp3.Authenticator { _, response ->
+            if (response.code != 407) return@Authenticator null
+            // 避免无限重试：已带过 Basic 头则不再重发
+            val header = response.request.header("Proxy-Authorization")
+            if (header != null && header.startsWith("Basic ")) return@Authenticator null
+            val credential = okhttp3.Credentials.basic(user, pass)
+            response.request.newBuilder()
+                .header("Proxy-Authorization", credential)
+                .build()
+        }
     }
 
     /** 普通 API 客户端（各平台 API、HLS、更新检查） */
@@ -129,6 +172,7 @@ object HttpClients {
             .apply {
                 // 配置了有效代理时注入；否则保持默认直连，行为与改动前完全一致
                 currentProxy()?.let { proxy -> proxy(proxy) }
+                proxyAuthenticator()?.let { auth -> proxyAuthenticator(auth) }
             }
             .build()
     }
@@ -166,6 +210,7 @@ object HttpClients {
             .apply {
                 // 配置了有效代理时注入；否则保持默认直连，行为与改动前完全一致
                 currentProxy()?.let { proxy -> proxy(proxy) }
+                proxyAuthenticator()?.let { auth -> proxyAuthenticator(auth) }
             }
             .build()
     }
@@ -179,6 +224,7 @@ object HttpClients {
             .retryOnConnectionFailure(false)
             .apply {
                 currentProxy()?.let { proxy -> proxy(proxy) }
+                proxyAuthenticator()?.let { auth -> proxyAuthenticator(auth) }
             }
             .build()
     }

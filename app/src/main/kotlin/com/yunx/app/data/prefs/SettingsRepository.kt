@@ -202,6 +202,20 @@ class SettingsRepository(context: Context) {
             prefs.edit().putInt("proxy_port", value.coerceIn(1, 65535)).apply()
         }
 
+    /** 代理认证用户名（默认空串=无认证）。fork 内部按用户指示明文存储。 */
+    var proxyUser: String
+        get() = prefs.getString("proxy_user", "") ?: ""
+        set(value) {
+            prefs.edit().putString("proxy_user", value).apply()
+        }
+
+    /** 代理认证密码（默认空串=无认证）。fork 内部按用户指示明文存储，不落日志。 */
+    var proxyPass: String
+        get() = prefs.getString("proxy_pass", "") ?: ""
+        set(value) {
+            prefs.edit().putString("proxy_pass", value).apply()
+        }
+
     companion object {
         const val DEFAULT_DOWNLOAD_THREADS = 32
         /**

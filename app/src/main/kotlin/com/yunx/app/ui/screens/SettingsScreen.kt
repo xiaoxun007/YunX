@@ -244,6 +244,8 @@ fun SettingsScreen(
     var proxyEnabled by remember { mutableStateOf(settingsRepo.proxyEnabled) }
     var proxyHost by remember { mutableStateOf(settingsRepo.proxyHost) }
     var proxyPort by remember { mutableStateOf(settingsRepo.proxyPort.toString()) }
+    var proxyUser by remember { mutableStateOf(settingsRepo.proxyUser) }
+    var proxyPass by remember { mutableStateOf(settingsRepo.proxyPass) }
     var showProxyDialog by remember { mutableStateOf(false) }
     // 用户体验与系统适配：锁屏保持下载 / 通知栏速度
     var keepLocked by remember { mutableStateOf(settingsRepo.keepDownloadWhenLocked) }
@@ -1222,6 +1224,8 @@ fun SettingsScreen(
         var tempEnabled by remember { mutableStateOf(proxyEnabled) }
         var tempHost by remember { mutableStateOf(proxyHost) }
         var tempPort by remember { mutableStateOf(proxyPort) }
+        var tempUser by remember { mutableStateOf(proxyUser) }
+        var tempPass by remember { mutableStateOf(proxyPass) }
         AlertDialog(
             onDismissRequest = { showProxyDialog = false },
             title = { Text("网络代理") },
@@ -1255,6 +1259,24 @@ fun SettingsScreen(
                         singleLine = true,
                         enabled = tempEnabled
                     )
+                    OutlinedTextField(
+                        value = tempUser,
+                        onValueChange = { tempUser = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("代理用户名（无认证留空）") },
+                        singleLine = true,
+                        enabled = tempEnabled
+                    )
+                    OutlinedTextField(
+                        value = tempPass,
+                        onValueChange = { tempPass = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("代理密码（无认证留空）") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        enabled = tempEnabled
+                    )
                     Text(
                         text = "代理用于加速 GitHub 等海外资源；不启用时所有请求直连。",
                         style = MaterialTheme.typography.bodySmall,
@@ -1278,10 +1300,15 @@ fun SettingsScreen(
                                     settingsRepo.proxyEnabled = true
                                     settingsRepo.proxyHost = host
                                     settingsRepo.proxyPort = port
+                                    settingsRepo.proxyUser = tempUser.trim()
+                                    settingsRepo.proxyPass = tempPass
                                     HttpClients.setProxy(host, port)
+                                    HttpClients.setProxyAuth(tempUser.trim(), tempPass)
                                     proxyEnabled = true
                                     proxyHost = host
                                     proxyPort = port.toString()
+                                    proxyUser = tempUser.trim()
+                                    proxyPass = tempPass
                                     showProxyDialog = false
                                     SnackbarController.show("代理已启用：$host:$port")
                                 }

@@ -91,6 +91,10 @@ class YunXApp : Application() {
                 val port = prefs.getInt("proxy_port", 7890)
                 if (host != null && port in 1..65535) {
                     com.yunx.app.data.network.HttpClients.setProxy(host, port)
+                    // 同时恢复代理认证凭据（明文，fork 内部；空串=无认证）
+                    val user = prefs.getString("proxy_user", "") ?: ""
+                    val pass = prefs.getString("proxy_pass", "") ?: ""
+                    com.yunx.app.data.network.HttpClients.setProxyAuth(user, pass)
                 }
             }
         }
