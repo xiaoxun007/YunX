@@ -104,6 +104,10 @@ class ResolveViewModel(
     var uiState by mutableStateOf<ResolveUiState>(ResolveUiState.Idle)
         private set
 
+    /** 目录/解析加载协程：进入加载前取消在途任务，返回输入页时一并取消，
+     *  避免「加载中按返回」后界面被在途协程的迟到结果改回（Loading/Detail 跳变）。 */
+    private var loadJob: kotlinx.coroutines.Job? = null
+
     /**
      * 游客模式：本次解析没有携带任何登录凭据（列目录可用，下载/转存需登录）。
      * 6 个网盘的分享**列表**接口都允许匿名（123/139/百度/夸克/UC 直接匿名；迅雷走不带
@@ -796,7 +800,8 @@ class ResolveViewModel(
             startGitHubResolve(github)
             return
         }
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             uiState = ResolveUiState.Loading
             val parsed = com.yunx.app.data.network.ShareLinkParser.parse(link)
             if (parsed == null) {
@@ -819,6 +824,8 @@ class ResolveViewModel(
                     loadFiles(s, currentDirFid, credential, repo)
                 }
                 .onFailure { e ->
+                    // 加载被返回取消（CancellationException）时不写错误状态，避免回输入页后闪错误
+                    if (e is kotlinx.coroutines.CancellationException) return@onFailure
                     val msg = e.message ?: "解析失败"
                     // 游客模式失败时补一句可执行的引导，而不是只抛服务端原文
                     uiState = ResolveUiState.Error(
@@ -849,7 +856,8 @@ class ResolveViewModel(
         githubBadges = emptyMap()
         dirStack.clear()
         pathNames = emptyList()
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             uiState = ResolveUiState.Loading
             when (linkType) {
                 is GitHubLinkType.Repository -> {
@@ -866,6 +874,7 @@ class ResolveViewModel(
                             f.code != null -> "HTTP ${f.code}"
                             else -> "未知错误"
                         }
+                        if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return@launch
                         uiState = ResolveUiState.Error("无法获取仓库信息：${linkType.owner}/${linkType.repo}（$reason）")
                         return@launch
                     }
@@ -903,13 +912,15 @@ class ResolveViewModel(
         val parent = githubParentFullName ?: return
         val owner = parent.substringBefore('/')
         val repoName = parent.substringAfter('/')
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             uiState = ResolveUiState.Loading
             // 从父仓库进入：重置当前仓库上下文，回到顶层仓库根
             dirStack.clear()
             pathNames = emptyList()
             val repo = githubApi?.getRepo(owner, repoName)
             if (repo == null) {
+                if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return@launch
                 uiState = ResolveUiState.Error("无法打开上游仓库：$parent")
                 return@launch
             }
@@ -956,6 +967,7 @@ class ResolveViewModel(
         val repo = currentGitHubRepo ?: return
         val entries = githubApi?.getTree(repo.owner, repo.name, sha)
         if (entries == null) {
+            if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return
             uiState = ResolveUiState.Error("加载目录失败")
             return
         }
@@ -1046,6 +1058,7 @@ class ResolveViewModel(
         }
         val rels = githubApi?.getReleases(repo.owner, repo.name, page = page)
         if (rels == null && page == 1) {
+            if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return
             uiState = ResolveUiState.Error("加载 Releases 失败")
             return
         }
@@ -1101,6 +1114,7 @@ class ResolveViewModel(
     private suspend fun loadGitHubReleaseAssets(tag: String) {
         val rel = currentGitHubReleases.firstOrNull { it.tagName == tag }
         if (rel == null) {
+            if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return
             uiState = ResolveUiState.Error("未找到 Release：$tag")
             return
         }
@@ -1140,6 +1154,7 @@ class ResolveViewModel(
             repos = githubApi?.getOrgRepos(owner, page = page)
         }
         if (repos == null && page == 1) {
+            if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return
             uiState = ResolveUiState.Error("无法获取 $owner 的仓库列表")
             return
         }
@@ -1207,6 +1222,7 @@ class ResolveViewModel(
                 val repoName = fullName.substringAfter('/')
                 val repo = githubApi?.getRepo(owner, repoName)
                 if (repo == null) {
+                    if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return
                     uiState = ResolveUiState.Error("无法打开仓库：$fullName")
                     return
                 }
@@ -1214,7 +1230,10 @@ class ResolveViewModel(
                 githubReadme = null
                 loadGitHubRoot()
             }
-            else -> uiState = ResolveUiState.Error("未知目录：$fid")
+            else -> {
+                if (coroutineContext[kotlinx.coroutines.Job]?.isActive == false) return
+                uiState = ResolveUiState.Error("未知目录：$fid")
+            }
         }
     }
 
@@ -1248,7 +1267,8 @@ class ResolveViewModel(
         if (currentPlatform == SharePlatform.GITHUB) {
             // 「加载更多」虚拟项：原地追加分页，不入目录栈
             if (file.fid.startsWith("github:more_")) {
-                viewModelScope.launch {
+                loadJob?.cancel()
+                loadJob = viewModelScope.launch {
                     uiState = ResolveUiState.Loading
                     loadGitHubDir(file.fid)
                 }
@@ -1257,7 +1277,8 @@ class ResolveViewModel(
             dirStack.addLast(currentDirFid)
             pathNames = pathNames + file.fname
             currentDirFid = file.fid
-            viewModelScope.launch {
+            loadJob?.cancel()
+            loadJob = viewModelScope.launch {
                 uiState = ResolveUiState.Loading
                 loadGitHubDir(file.fid)
             }
@@ -1267,7 +1288,8 @@ class ResolveViewModel(
         dirStack.addLast(currentDirFid)
         pathNames = pathNames + file.fname
         currentDirFid = file.fid
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             uiState = ResolveUiState.Loading
             val credential = currentCredential().orEmpty()
             // 游客模式：子目录同样允许匿名列出（见 Agent.md §3.19）
@@ -1282,7 +1304,8 @@ class ResolveViewModel(
             if (dirStack.isEmpty()) return
             currentDirFid = dirStack.removeLast()
             pathNames = pathNames.dropLast(1)
-            viewModelScope.launch {
+            loadJob?.cancel()
+            loadJob = viewModelScope.launch {
                 uiState = ResolveUiState.Loading
                 loadGitHubDir(currentDirFid)
             }
@@ -1292,7 +1315,8 @@ class ResolveViewModel(
         if (dirStack.isEmpty()) return
         currentDirFid = dirStack.removeLast()
         pathNames = pathNames.dropLast(1)
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             uiState = ResolveUiState.Loading
             // 游客模式：空凭据照常加载（见 Agent.md §3.19）
             loadFiles(s, currentDirFid, currentCredential().orEmpty(), currentRepo())
@@ -1310,6 +1334,9 @@ class ResolveViewModel(
 
     /** 返回输入页 */
     fun backToInput() {
+        // 取消在途加载：防止协程迟到结果把状态改回 Loading/Detail
+        loadJob?.cancel()
+        loadJob = null
         session = null
         downloadLink = null
         currentLink = null
@@ -1363,7 +1390,8 @@ class ResolveViewModel(
         pathNames = pathNames.take(level)
         // GitHub 分支：无需凭证，按 fid 重新加载
         if (currentPlatform == SharePlatform.GITHUB) {
-            viewModelScope.launch {
+            loadJob?.cancel()
+            loadJob = viewModelScope.launch {
                 uiState = ResolveUiState.Loading
                 loadGitHubDir(currentDirFid)
             }
@@ -1571,6 +1599,8 @@ class ResolveViewModel(
                 uiState = ResolveUiState.Detail(s, files)
             }
             .onFailure { e ->
+                // 加载被返回取消（CancellationException）时不写错误状态
+                if (e is kotlinx.coroutines.CancellationException) return@onFailure
                 uiState = ResolveUiState.Error(e.message ?: "获取文件列表失败")
             }
     }

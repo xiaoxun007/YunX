@@ -31,6 +31,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -145,6 +146,11 @@ fun ResolveScreen(
     modifier: Modifier = Modifier
 ) {
     val state = viewModel.uiState
+    // 加载中拦截系统返回：取消加载回输入页/上级目录，而不是退出应用
+    // （加载全屏无列表可返回时，由 navigateBack 接管：根目录→回输入页，子目录→回上级目录）
+    if (state is ResolveUiState.Loading) {
+        BackHandler { viewModel.navigateBack() }
+    }
     val downloadLink = viewModel.downloadLink
     val downloadError = viewModel.downloadError
     val context = LocalContext.current
