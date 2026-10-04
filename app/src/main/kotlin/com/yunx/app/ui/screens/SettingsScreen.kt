@@ -58,6 +58,7 @@ import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
@@ -246,6 +247,7 @@ fun SettingsScreen(
     var proxyPort by remember { mutableStateOf(settingsRepo.proxyPort.toString()) }
     var proxyUser by remember { mutableStateOf(settingsRepo.proxyUser) }
     var proxyPass by remember { mutableStateOf(settingsRepo.proxyPass) }
+    var forceIpv4 by remember { mutableStateOf(settingsRepo.forceIpv4) }
     var showProxyDialog by remember { mutableStateOf(false) }
     // 用户体验与系统适配：锁屏保持下载 / 通知栏速度
     var keepLocked by remember { mutableStateOf(settingsRepo.keepDownloadWhenLocked) }
@@ -571,6 +573,19 @@ fun SettingsScreen(
                 "未启用（直连）"
             },
             onClick = { showProxyDialog = true }
+        )
+
+        SettingsItem(
+            icon = Icons.Outlined.Language,
+            shape = listGroupShape(ListGroupPos.MIDDLE),
+            title = "强制 IPv4 优先连接",
+            description = "IPv6 不通时改善下载（国内移动网络默认开启）",
+            onClick = {
+                forceIpv4 = !forceIpv4
+                settingsRepo.forceIpv4 = forceIpv4
+                com.yunx.app.data.network.HttpClients.setForceIpv4(forceIpv4)
+            },
+            trailing = { Switch(checked = forceIpv4, onCheckedChange = null) }
         )
 
         Spacer(modifier = Modifier.height(ListGroupGap))

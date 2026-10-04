@@ -217,6 +217,13 @@ class SettingsRepository(context: Context) {
             prefs.edit().putString("proxy_pass", value).apply()
         }
 
+    /** 强制 IPv4 优先 DNS（默认开启）：国内移动网络 IPv6 直连不通时改善下载 */
+    var forceIpv4: Boolean
+        get() = prefs.getBoolean("force_ipv4", true)
+        set(value) {
+            prefs.edit().putBoolean("force_ipv4", value).apply()
+        }
+
     companion object {
         const val DEFAULT_DOWNLOAD_THREADS = 32
         /** GENERIC 通用直链默认线程数：慢源上 512 路互抢会把总速压到 KB 级，默认 16 更稳 */

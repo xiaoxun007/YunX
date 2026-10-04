@@ -97,6 +97,8 @@ class YunXApp : Application() {
                     com.yunx.app.data.network.HttpClients.setProxyAuth(user, pass)
                 }
             }
+            // IPv4 优先 DNS（默认开启，用户可关）
+            com.yunx.app.data.network.HttpClients.setForceIpv4(prefs.getBoolean("force_ipv4", true))
         }
         purgeDownloadLeftovers(this)
     }

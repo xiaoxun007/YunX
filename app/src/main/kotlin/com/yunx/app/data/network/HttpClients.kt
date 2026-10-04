@@ -20,8 +20,11 @@ package com.yunx.app.data.network
 
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.util.concurrent.TimeUnit
@@ -64,6 +67,35 @@ object HttpClients {
     /** 代理认证密码（空串=无认证）。fork 内部明文存储，不落日志。 */
     @Volatile
     private var proxyPass: String = ""
+
+    /** 是否强制 IPv4 优先 DNS（默认 true）。关闭时用 Dns.SYSTEM 原行为。 */
+    @Volatile
+    private var forceIpv4: Boolean = true
+
+    /**
+     * IPv4 优先 DNS：把 IPv4 地址排到列表前面，IPv6 留在尾部兜底。
+     * 国内多数移动网络 IPv6 直连不通，OkHttp 顺序尝试地址时先撞 IPv6 失败会造成连接风暴。
+     * 纯 IPv6 主机天然不受影响（列表里只有 IPv6，排序不变）。
+     */
+    private object Ipv4FirstDns : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val all = Dns.SYSTEM.lookup(hostname)
+            return all.sortedBy { if (it is Inet4Address) 0 else 1 }
+        }
+    }
+
+    /** 当前生效的 DNS（forceIpv4 开启时 IPv4 优先，否则系统默认） */
+    private fun currentDns(): Dns = if (forceIpv4) Ipv4FirstDns else Dns.SYSTEM
+
+    /** 配置是否强制 IPv4 优先；调用后清空 client 缓存立即生效（与 setProxy 同范式） */
+    fun setForceIpv4(enabled: Boolean) {
+        synchronized(lock) {
+            forceIpv4 = enabled
+            apiCache = null
+            downloadCache = null
+            probeCache = null
+        }
+    }
 
     /**
      * 配置全局 HTTP 代理。host 为 null 或 port 不在 1-65535 时视为不使用代理（直连）。
@@ -173,6 +205,7 @@ object HttpClients {
                 // 配置了有效代理时注入；否则保持默认直连，行为与改动前完全一致
                 currentProxy()?.let { proxy -> proxy(proxy) }
                 proxyAuthenticator()?.let { auth -> proxyAuthenticator(auth) }
+                dns(currentDns())
             }
             .build()
     }
@@ -211,6 +244,7 @@ object HttpClients {
                 // 配置了有效代理时注入；否则保持默认直连，行为与改动前完全一致
                 currentProxy()?.let { proxy -> proxy(proxy) }
                 proxyAuthenticator()?.let { auth -> proxyAuthenticator(auth) }
+                dns(currentDns())
             }
             .build()
     }
@@ -225,6 +259,7 @@ object HttpClients {
             .apply {
                 currentProxy()?.let { proxy -> proxy(proxy) }
                 proxyAuthenticator()?.let { auth -> proxyAuthenticator(auth) }
+                dns(currentDns())
             }
             .build()
     }
