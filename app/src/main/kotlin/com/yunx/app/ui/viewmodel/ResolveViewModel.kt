@@ -1804,11 +1804,17 @@ class ResolveViewModel(
             // 通用直链（解析页直链分支，fid 前缀 direct:）：无需登录/取链/镜像，
             // 直接用探测到的 URL 入队，线程数走通用设置（GENERIC）
             if (link.fid.startsWith("direct:")) {
+                // 通用直链：无网盘平台 UA，默认 OkHttp okhttp/x.y.z 会被部分 CDN/WAF 拒（413/403）。
+                // 补 Chrome Android 浏览器 UA（探测与分片下载共用 task headers，链路全覆盖）；
+                // GitHub/网盘各平台分支 UA 一律不动。
                 val id = downloadManager.enqueue(
                     url = link.downloadUrl,
                     fileName = link.filename,
                     size = link.size,
-                    platform = DownloadPlatform.GENERIC
+                    platform = DownloadPlatform.GENERIC,
+                    headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+                    )
                 )
                 pendingScrollTaskId = id
                 downloadStarted = true

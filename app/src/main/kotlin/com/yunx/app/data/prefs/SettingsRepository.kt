@@ -34,10 +34,11 @@ class SettingsRepository(context: Context) {
         get() = downloadThreadsFor(DownloadPlatform.GENERIC)
         set(value) = setDownloadThreads(DownloadPlatform.GENERIC, value)
 
-    /** 获取指定平台的下载线程数；迅雷固定 8，其余默认 32、上限 512 */
+    /** 获取指定平台的下载线程数；迅雷固定 8，其余默认 32、上限 512；GENERIC 直链默认 16（慢源高并发会互抢） */
     fun downloadThreadsFor(platform: String): Int {
         if (platform == DownloadPlatform.XUNLEI) return XUNLEI_DOWNLOAD_THREADS
-        return prefs.getInt(prefsKey(platform), DEFAULT_DOWNLOAD_THREADS)
+        val default = if (platform == DownloadPlatform.GENERIC) GENERIC_DEFAULT_THREADS else DEFAULT_DOWNLOAD_THREADS
+        return prefs.getInt(prefsKey(platform), default)
             .coerceIn(1, MAX_DOWNLOAD_THREADS)
     }
 
@@ -218,6 +219,8 @@ class SettingsRepository(context: Context) {
 
     companion object {
         const val DEFAULT_DOWNLOAD_THREADS = 32
+        /** GENERIC 通用直链默认线程数：慢源上 512 路互抢会把总速压到 KB 级，默认 16 更稳 */
+        const val GENERIC_DEFAULT_THREADS = 16
         /**
          * 线程数上限 = 512（与设置页档位一致）。
          * 真正同时在飞的请求数另由 `DownloadManager.MAX_INFLIGHT_CHUNKS`（按最大堆预算推导、同样封顶 512）

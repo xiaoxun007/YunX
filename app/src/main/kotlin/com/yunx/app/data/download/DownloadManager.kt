@@ -129,6 +129,11 @@ private const val PREEMPT_ENDGAME_INFLIGHT = 3
 /** 收尾时的最小存活时间：比常规门槛短得多，但也要避开刚建连的爬坡期 */
 private const val PREEMPT_ENDGAME_MIN_AGE_MS = 3_000L
 
+/** 停滞判定：总速度低于此值（20KB/s）视为「慢源互抢」 */
+private const val STAGNATION_BPS = 20 * 1024L
+/** 停滞持续多久（30s）后才降并发（避免启动期爬坡误判） */
+private const val STAGNATION_HOLD_MS = 30_000L
+
 /** RANGE_IGNORED 容忍次数：CDN 偶发 200（限流中间态）前 N 次不触发整任务回退，继续领新片；超过才回退单流 */
 private const val RANGE_IGNORED_TOLERANCE = 3
 
@@ -383,6 +388,9 @@ class DownloadManager(
     ) {
         if (diag.isEmpty()) return
         val avgPerConn = if (elapsedMs > 0 && workers > 0) downloaded * 1000 / elapsedMs / workers else 0L
+        // ★ 全局慢短路：整任务平均单连接速度都低于抢占下限，说明是源站/网络整体慢，
+        //   不是「少数慢路」。此时抢占只会徒增握手开销（弱网下重连 ~0.5-1s/次），无意义。
+        if (avgPerConn < PREEMPT_MIN_BPS) return
         val floor = maxOf(PREEMPT_MIN_BPS, avgPerConn / 2)
         val now = System.currentTimeMillis()
         var taken = 0
@@ -770,6 +778,16 @@ class DownloadManager(
                     return
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: DownloadHttpException) {
+                    // 4xx（除 408/429）永久失败：立即终态不重试（省 ~12s），message 已是面向用户文案
+                    if (e.nonRetryable) throw e
+                    attempts++
+                    if (isTaskActive() && attempts <= maxRetries) {
+                        Log.d(TAG, "runTaskWithRetry: id=$id 失败，自动重试 $attempts/$maxRetries：${e.message}")
+                        delay(1200L * attempts)
+                    } else {
+                        throw e
+                    }
                 } catch (e: Exception) {
                     attempts++
                     if (isTaskActive() && attempts <= maxRetries) {
@@ -845,7 +863,15 @@ class DownloadManager(
                 val mirrorPart = results.filter { it.url != directUrl }.joinToString("；") {
                     "${LogRedactor.url(it.url)} ${it.reason ?: "不可用"}"
                 }
-                throw java.io.IOException("$directPart；镜像失败：$mirrorPart")
+                val fullMsg = "$directPart；镜像失败：$mirrorPart"
+                // 从各通道原因里提取 HTTP 码：只要有一个 4xx（非 408/429）即视为永久拒绝，不重试
+                val httpCode = results.firstNotNullOfOrNull { r ->
+                    Regex("""HTTP (\d{3})""").find(r.reason ?: "")?.groupValues?.get(1)?.toIntOrNull()
+                }
+                if (httpCode != null && httpCode in 400..499 && httpCode != 408 && httpCode != 429) {
+                    throw DownloadHttpException(httpCode, fullMsg)
+                }
+                throw java.io.IOException(fullMsg)
             }
             task = task.copy(url = ok[0].url)
             probedSize = ok[0].size
@@ -963,11 +989,15 @@ class DownloadManager(
         val allOk = coroutineScope {
             // ★ worker 数已钳到 actualWorkers；在飞槽位由全进程共享的 inflightLimiter 控制
             //   （见字段注释：绝不手动 release，也不要改回「每任务一个信号量」）
-            val workers = List(actualWorkers) {
+            // workerCap：看门狗检测到停滞时把活动 worker 数钳到 16（已在飞分片自然跑完，不重规划分片）
+            val workerCap = AtomicInteger(actualWorkers)
+            val stagnantSince = AtomicLong(0L)
+            val workers = List(actualWorkers) { workerIdx ->
                 async(chunkIoDispatcher) {
                     // 阶段 1：主池循环领取
                     while (true) {
                         if (fallback.get()) break
+                        if (workerIdx >= workerCap.get()) break   // 停滞降并发后，多余 worker 退出领片
                         val i = nextIdx.getAndIncrement()
                         if (i >= mainPoolCount) break
                         // 错峰建连：首请求前按序号微延迟，平摊 TCP/TLS 突发（仅影响首请求，不影响稳态并发）
@@ -1024,6 +1054,7 @@ class DownloadManager(
                     }
                     // 阶段 2：主池取空 → 弹性区按字节顺序领取 4MB 块（空闲线程逐个平滑转入，并发形态不突变）
                     while (!fallback.get()) {
+                        if (workerIdx >= workerCap.get()) break   // 停滞降并发后，多余 worker 退出
                         val range = elasticAllocator.take() ?: break
                         val s = range.first
                         val e = range.last
@@ -1083,6 +1114,20 @@ class DownloadManager(
                     // ★ 慢连接抢占（永久逻辑，勿删）：先刷新瞬时速度，再以本任务的平均单连接速度为参照
                     sampleInflightChunks(inflightChunks)
                     preemptSlowChunks(id, downloaded.get(), System.currentTimeMillis() - runStartMs, actualWorkers, inflightChunks)
+                    // ★ 停滞自动降并发：连续 30s 总速 < 20KB/s 且原并发 > 16 → 钳到 16（不重规划分片，
+                    //   已在飞分片自然跑完；用户手动设 ≤16 时不干预）。慢源上 512 路互抢会把总速压到 KB 级。
+                    val elapsed = System.currentTimeMillis() - runStartMs
+                    val totalBps = if (elapsed > 0) downloaded.get() * 1000 / elapsed else 0L
+                    if (totalBps < STAGNATION_BPS && actualWorkers > 16 && workerCap.get() > 16) {
+                        if (stagnantSince.get() == 0L) {
+                            stagnantSince.set(System.currentTimeMillis())
+                        } else if (System.currentTimeMillis() - stagnantSince.get() >= STAGNATION_HOLD_MS) {
+                            workerCap.set(16)
+                            Log.w(TAG, "runTask: id=$id 停滞 30s（总速 ${formatSpeed(totalBps)}），自动降并发 $actualWorkers → 16")
+                        }
+                    } else {
+                        stagnantSince.set(0L)
+                    }
                 }
             }
             workers.awaitAll()

@@ -72,7 +72,29 @@ enum class ChunkResult { OK, RANGE_IGNORED, FAILED }
  * 使总速在收尾时塌到 KB 级（64 路里 61 路空转 37 秒只等最后 500KB）。
  * 语义是「换连接」而不是「失败」，因此不退避、不判写入不足，也不改变 ChunkResult 的对外三态。
  */
-private class PreemptedException : IOException("慢连接抢占")
+/** HTTP 状态码 → 面向用户的失败文案（4xx 永久失败，5xx/IO 仍重试） */
+internal fun httpErrorMessage(code: Int): String = when (code) {
+    403 -> "无权访问（HTTP 403）：链接可能需要登录/Referer，或已被源站拒绝"
+    404 -> "资源不存在（HTTP 404）：链接可能已失效"
+    410 -> "资源已删除（HTTP 410）"
+    413 -> "服务器拒绝请求（HTTP 413）：资源可能已失效或 CDN 限制了程序化访问"
+    416 -> "Range 范围不可用（HTTP 416）"
+    in 400..499 -> "请求被拒绝（HTTP $code）"
+    else -> "下载失败 HTTP $code"
+}
+
+/**
+ * HTTP 非 2xx 失败（带状态码）。用于区分「可重试瞬时错误」与「永久 4xx 拒绝」：
+ * - 4xx（除 408/429）视为永久失败，runTaskWithRetry 不重试，直接写 errorMsg；
+ * - 5xx/IO/超时仍走重试。message 已带面向用户的文案。
+ */
+internal open class DownloadHttpException(
+    val code: Int,
+    message: String,
+) : IOException(message) {
+    /** 4xx（除 408/429）= 永久失败，不重试；其余（5xx/IO）仍重试 */
+    val nonRetryable: Boolean get() = code in 400..499 && code != 408 && code != 429
+}
 
 /**
  * OkHttp 分片下载器：
@@ -369,7 +391,7 @@ class ChunkDownloader(private val clientProvider: () -> OkHttpClient) {
                     Log.w(TAG, "downloadFull: task=$taskId 返回 text/html（疑似过期/防盗链/错误页），终止")
                     throw IllegalStateException("下载失败：链接已失效或需要 Referer（返回 HTML 页）")
                 }
-                if (!response.isSuccessful) throw IllegalStateException("下载失败 HTTP ${response.code}")
+                if (!response.isSuccessful) throw DownloadHttpException(response.code, httpErrorMessage(response.code))
                 val body = response.body ?: return@use false
                 // 已知总大小时写时硬截断：服务器多给/Content-Range 偏差的字节直接丢弃，文件永不膨胀
                 val expected = if (total > 0) (total - existing).coerceAtLeast(0) else -1L

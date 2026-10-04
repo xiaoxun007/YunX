@@ -810,6 +810,9 @@ fun SettingsScreen(
                                     threads = current,
                                     onSelect = { v ->
                                         settingsRepo.setDownloadThreads(selectedThreadPlatform.platform, v)
+                                        if (v >= 512) {
+                                            SnackbarController.show("高并发（512 路）可能触发源站限速、反而降低速度；慢源建议 16-32")
+                                        }
                                         showPlatformThreadDialog = false
                                     },
                                     modifier = Modifier.weight(1f)
