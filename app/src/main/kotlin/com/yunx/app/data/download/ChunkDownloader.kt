@@ -72,6 +72,8 @@ enum class ChunkResult { OK, RANGE_IGNORED, FAILED }
  * 使总速在收尾时塌到 KB 级（64 路里 61 路空转 37 秒只等最后 500KB）。
  * 语义是「换连接」而不是「失败」，因此不退避、不判写入不足，也不改变 ChunkResult 的对外三态。
  */
+private class PreemptedException : IOException("慢连接抢占")
+
 /** HTTP 状态码 → 面向用户的失败文案（4xx 永久失败，5xx/IO 仍重试） */
 internal fun httpErrorMessage(code: Int): String = when (code) {
     403 -> "无权访问（HTTP 403）：链接可能需要登录/Referer，或已被源站拒绝"
@@ -168,7 +170,7 @@ class ChunkDownloader(private val clientProvider: () -> OkHttpClient) {
      * 返回 `(size, reason)`：探测成功时 size=Content-Range 总大小、reason=null；失败时 size=null、reason 为
      * 「超时 / HTTP xxx / HTML 页面 / 连接失败」等人类可读原因（供失败 errorMsg 拼接）。**全程静默，不打 DB。**
      */
-    suspend fun probeMirror(url: String, headers: Map<String, String>): Pair<Long?, String> =
+    suspend fun probeMirror(url: String, headers: Map<String, String>): Pair<Long?, String?> =
         withContext(DownloadManager.chunkIoDispatcher) {
             val request = Request.Builder()
                 .url(url)
