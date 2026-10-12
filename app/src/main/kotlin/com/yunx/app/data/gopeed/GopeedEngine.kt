@@ -459,8 +459,32 @@ object GopeedEngine {
         bt.put("seedTime", 1)
         protocols.put("bt", bt)
         cfg.put("protocolConfig", protocols)
+        // fork 全局代理对 Gopeed 内核下载同样生效：把代理写进引擎配置（usePlatformProxy=false ⇒ 用我们给的 proxy，
+        // 而不是系统代理）。代理带认证时 URL 形态为 http://user:pass@host:port；未开代理则置空 + usePlatformProxy=false。
+        val proxyUrl = forkProxyUrl(context)
+        cfg.put("usePlatformProxy", false)
+        cfg.put("proxy", proxyUrl ?: "")
         invoke("PUT", "/api/v1/config", null, cfg.toString())
-        Log.d(TAG, "已下发引擎运行配置：maxRunning=$maxRunning BT不做种=$bt")
+        Log.d(TAG, "已下发引擎运行配置：maxRunning=$maxRunning BT不做种=$bt proxy=${if (proxyUrl.isNullOrBlank()) "(无)" else "(已设置)"}")
+    }
+
+    /**
+     * 从 fork 设置（SettingsRepository proxy_enabled/host/port/user/pass）拼 Gopeed 用的代理 URL。
+     * 未启用代理或 host 为空时返回 null（引擎不代理直连）。
+     */
+    private fun forkProxyUrl(context: Context): String? {
+        val prefs = SettingsRepository(context)
+        if (!prefs.proxyEnabled) return null
+        val host = prefs.proxyHost.trim()
+        val port = prefs.proxyPort
+        if (host.isEmpty() || port <= 0) return null
+        val user = prefs.proxyUser.trim()
+        val pass = prefs.proxyPass
+        return if (user.isNotEmpty()) {
+            "http://$user:$pass@$host:$port"
+        } else {
+            "http://$host:$port"
+        }
     }
 
     /**
