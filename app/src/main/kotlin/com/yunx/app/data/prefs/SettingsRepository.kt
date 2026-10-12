@@ -64,7 +64,26 @@ class SettingsRepository(context: Context) {
             prefs.edit().putString("download_dir_uri", value).apply()
         }
 
-    /** 最大同时下载任务数（默认 1：前台任务吃满带宽，其余排队；参考 IDM 默认单任务满速） */
+    /**
+     * Gopeed 引擎的下载目录（**真实文件系统路径**，如 `/storage/emulated/0/Download/YunX`）；
+     * 空 = 默认目录（公共 `Download` 根目录，与内置下载器同一口径，见 `StorageDirs`）。
+     *
+     * 为什么不复用 [downloadDirUri]：引擎是原生核心，写不了 SAF 的 `content://` 目录，只能拿真实路径。
+     * 用户在设置里选目录时走 SAF（从 tree Uri 反解真实路径），反解不到才让他手输，见 Agent.md §3.33。
+     */
+    var engineDownloadDir: String
+        get() = prefs.getString("engine_download_dir", "") ?: ""
+        set(value) {
+            prefs.edit().putString("engine_download_dir", value.trim()).apply()
+        }
+
+    /**
+     * 最大同时下载任务数（默认 3，超出的任务排队等待）。
+     *
+     * ★ 这一个值**同时**管两条下载路径，改默认值时两边一起走：
+     *   ① 内置分片下载器：`DownloadManager` 的并发闸门按它轮询等空位；
+     *   ② Gopeed 引擎：引擎自己的调度器按配置顶层的 `maxRunning` 排队（见 `GopeedEngine`）。
+     */
     var maxConcurrentDownloads: Int
         get() = prefs.getInt("max_concurrent_downloads", DEFAULT_MAX_CONCURRENT_DOWNLOADS)
         set(value) {
@@ -99,6 +118,28 @@ class SettingsRepository(context: Context) {
             prefs.edit().putBoolean("notification_show_speed", value).apply()
         }
 
+    /**
+     * 下载引擎：`ENGINE_BUILTIN`（默认，项目自带的 Kotlin 分片下载器）
+     * 或 `ENGINE_GOPEED`（内置 Gopeed 引擎，需先在「下载引擎」页导入 AAR）。
+     *
+     * 取值非法（手改 prefs 等）时按内置下载器处理；引擎没就绪时 DownloadManager 也会自动回退，
+     * 不会因为设置项把下载功能弄坏。
+     */
+    var downloadEngine: String
+        get() = prefs.getString("download_engine", ENGINE_BUILTIN)?.takeIf {
+            it == ENGINE_BUILTIN || it == ENGINE_GOPEED
+        } ?: ENGINE_BUILTIN
+        set(value) {
+            prefs.edit().putString("download_engine", value).apply()
+        }
+
+    /** 夸克取链方式：true=免转存（直接换下载直链，不写入网盘，默认）；false=先转存到临时目录再取链 */
+    var quarkNoSaveDownload: Boolean
+        get() = prefs.getBoolean("quark_no_save_download", true)
+        set(value) {
+            prefs.edit().putBoolean("quark_no_save_download", value).apply()
+        }
+
     /** 桌面图标样式：0=经典图标(icon)，1=新图标(icon2)；切换经 activity-alias 动态生效 */
     var appIconVariant: Int
         get() = prefs.getInt("app_icon_variant", 0)
@@ -125,6 +166,38 @@ class SettingsRepository(context: Context) {
         get() = prefs.getBoolean("accept_prerelease_update", false)
         set(value) {
             prefs.edit().putBoolean("accept_prerelease_update", value).apply()
+        }
+
+    /**
+     * 诊断模式（设置 → 关于云析 → 长按 → 开发调试）：默认关，开启后把 db / crypto / download /
+     * webview / network / operation 六个模块的详细日志写进私有目录（见 `DiagnosticLog`）。
+     * ★ 这里只存开关值，运行态由 `DiagnosticLog` 自己缓存（改完立刻生效，不必重启）。
+     */
+    var diagnosticMode: Boolean
+        get() = prefs.getBoolean("diagnostic_mode", false)
+        set(value) {
+            prefs.edit().putBoolean("diagnostic_mode", value).apply()
+        }
+
+    /**
+     * 下载调试（设置 → 关于云析 → 长按 → 开发调试）：默认关。
+     * 开启后按下载任务记录事件流（主要变更节点 / 错误节点），下载页长按任务可进「调试信息」页查看并导出；
+     * **关闭会清空全部日志**（见 `DownloadDebugLog`），所以设置页关开关前有二次确认弹窗。
+     */
+    var downloadDebug: Boolean
+        get() = prefs.getBoolean("download_debug", false)
+        set(value) {
+            prefs.edit().putBoolean("download_debug", value).apply()
+        }
+
+    /**
+     * 全量 SHA-256 校验（开发调试菜单，**默认关**）：开启后保存文件时顺带算出整文件摘要，
+     * 写进下载调试日志（「全量校验」事件）。合并那一遍本来就在读所有字节，所以不额外读盘，只多一点 CPU。
+     */
+    var fullFileSha256: Boolean
+        get() = prefs.getBoolean("download_full_sha256", false)
+        set(value) {
+            prefs.edit().putBoolean("download_full_sha256", value).apply()
         }
 
     /** 忽略 SSL 证书校验（抓包调试用，隐藏菜单开启；默认关闭） */
@@ -226,8 +299,15 @@ class SettingsRepository(context: Context) {
 
     companion object {
         const val DEFAULT_DOWNLOAD_THREADS = 32
+
         /** GENERIC 通用直链默认线程数：慢源上 512 路互抢会把总速压到 KB 级，默认 16 更稳 */
         const val GENERIC_DEFAULT_THREADS = 16
+
+        /** 下载引擎标识（[downloadEngine] 的取值）：内置 Kotlin 分片下载器 */
+        const val ENGINE_BUILTIN = "builtin"
+
+        /** 下载引擎标识：内置 Gopeed 引擎（gomobile 核心，需用户导入 AAR） */
+        const val ENGINE_GOPEED = "gopeed"
         /**
          * 线程数上限 = 512（与设置页档位一致）。
          * 真正同时在飞的请求数另由 `DownloadManager.MAX_INFLIGHT_CHUNKS`（按最大堆预算推导、同样封顶 512）
@@ -238,7 +318,7 @@ class SettingsRepository(context: Context) {
          */
         const val MAX_DOWNLOAD_THREADS = 512
         const val XUNLEI_DOWNLOAD_THREADS = 8
-        const val DEFAULT_MAX_CONCURRENT_DOWNLOADS = 1
+        const val DEFAULT_MAX_CONCURRENT_DOWNLOADS = 3
         const val DEFAULT_DOWNLOAD_RETRY_COUNT = 3
         const val DEFAULT_PROXY_PORT = 7890
 

@@ -262,20 +262,52 @@ class XunleiApi(
     /**
      * 用 refresh_token 刷新 access_token（OAuth2 refresh_token）。
      * 导入恢复后旧 token 可能已过期（12h），刷新后立即有效。
+     *
+     * @param authType 登录方式：网页登录（[XunleiWebCredential.AUTH_TYPE]）的 token 与 App token
+     *   **不是同一套 OAuth 客户端**——网页 token 只能用网页 client_id 刷新，请求形态也不同
+     *   （JSON + 桌面 UA + Origin/Referer，且必须**不带** client_secret）；带错了会被直接拒绝，
+     *   表现为「登录才没多久就提示过期」。
      * @return 新 (access_token, refresh_token)；失败返回 null
      */
-    suspend fun refreshToken(refreshToken: String, deviceId: String): Pair<String, String>? =
+    suspend fun refreshToken(
+        refreshToken: String,
+        deviceId: String,
+        authType: String = ""
+    ): Pair<String, String>? =
         withContext(Dispatchers.IO) {
-            val body = "grant_type=refresh_token" +
-                "&client_id=${XunleiConstants.APP_CLIENT_ID}" +
-                "&client_secret=${XunleiConstants.APP_CLIENT_SECRET}" +
-                "&refresh_token=${java.net.URLEncoder.encode(refreshToken, "UTF-8")}"
-            val request = Request.Builder()
-                .url(XunleiConstants.REFRESH_URL)
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .header("X-Device-Id", deviceId)
-                .post(body.toRequestBody(formMediaType))
-                .build()
+            val web = authType == XunleiWebCredential.AUTH_TYPE
+            val request = if (web) {
+                val body = JSONObject()
+                    .put("grant_type", "refresh_token")
+                    .put("client_id", XunleiWebCredential.CLIENT_ID)
+                    .put("refresh_token", refreshToken)
+                    .toString()
+                Request.Builder()
+                    .url(XunleiConstants.REFRESH_URL)
+                    .header("Content-Type", "application/json")
+                    .header("X-Device-Id", deviceId)
+                    .header("X-Client-Id", XunleiWebCredential.CLIENT_ID)
+                    .header("Origin", "https://pan.xunlei.com")
+                    .header("Referer", "https://pan.xunlei.com/")
+                    .header("User-Agent", XunleiWebCredential.DESKTOP_UA)
+                    // 桌面 UA 必须同步这套 client hints：只改 UA 不同步 Sec-CH-UA 会被判成移动端而冲突
+                    .header("Sec-Ch-Ua", XunleiWebCredential.DESKTOP_SEC_CH_UA)
+                    .header("Sec-Ch-Ua-Mobile", XunleiWebCredential.DESKTOP_SEC_CH_UA_MOBILE)
+                    .header("Sec-Ch-Ua-Platform", XunleiWebCredential.DESKTOP_SEC_CH_UA_PLATFORM)
+                    .post(body.toRequestBody(jsonMediaType))
+                    .build()
+            } else {
+                val body = "grant_type=refresh_token" +
+                    "&client_id=${XunleiConstants.APP_CLIENT_ID}" +
+                    "&client_secret=${XunleiConstants.APP_CLIENT_SECRET}" +
+                    "&refresh_token=${java.net.URLEncoder.encode(refreshToken, "UTF-8")}"
+                Request.Builder()
+                    .url(XunleiConstants.REFRESH_URL)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .header("X-Device-Id", deviceId)
+                    .post(body.toRequestBody(formMediaType))
+                    .build()
+            }
             runCatching {
                 client.newCall(request).execute().use { resp ->
                     val json = JSONObject(resp.body?.string() ?: "{}")
@@ -289,6 +321,39 @@ class XunleiApi(
                 }
             }.getOrNull()
         }
+
+    /**
+     * 校验一个 access_token 是否真的能用（网页登录落库前调用）。
+     *
+     * 只用网页 localStorage 里读到的东西无法判断登录是否已完成——页面在登录过程中会把
+     * 中间态写进去，所以这里打一次真实的云盘接口（GET /drive/v1/about）再决定要不要落库；
+     * 网络异常也返回 false，交给上层的自动检测继续轮询重试，不会误判成「登录成功」。
+     *
+     * **必须校验传入的这个 token**（`preferCachedToken = false`）：实例上缓存的 currentAccessToken
+     * 属于上一次（可能是另一个账号）的登录，拿它去校验会把「有效」判在错误的账号头上。
+     */
+    suspend fun verifyAccessToken(
+        accessToken: String,
+        deviceId: String,
+        captchaToken: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (accessToken.isBlank()) return@withContext false
+        runCatching {
+            val request = panRequest(
+                "${XunleiConstants.PAN_BASE}/drive/v1/about",
+                accessToken, deviceId, captchaToken,
+                preferCachedToken = false
+            )
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return@use false
+                val json = JSONObject(resp.body?.string() ?: "{}")
+                // 该接口的返回结构随通道不同：App 通道包在 data 里，网页（webToken）通道是**顶层**
+                // kind/quota（没有 data 包裹，实测 `{kind:"drive#about",quota:{...}}`）。只判 data 会把
+                // 网页登录的合法 token 误判成无效 →「登录后提示未检测到登录态」。两种结构都接受。
+                json.optJSONObject("data") != null || json.optString("kind") == "drive#about"
+            }
+        }.getOrDefault(false)
+    }
 
     /** 解析 JWT 的 exp（秒）；解析失败返回 0 */
     fun jwtExp(token: String): Long = runCatching {
@@ -755,7 +820,8 @@ class XunleiApi(
         accessToken: String,
         deviceId: String,
         captchaToken: String,
-        body: String? = null
+        body: String? = null,
+        preferCachedToken: Boolean = true
     ): Request {
         val builder = Request.Builder()
             .url(url)
@@ -766,8 +832,10 @@ class XunleiApi(
             .header("Origin", "https://pan.xunlei.com")
             .header("Referer", "https://pan.xunlei.com/")
             if (accessToken.isNotBlank()) {
-                // 登录态优先用刷新后的 currentAccessToken，避免闭包里的旧值
-                builder.header("Authorization", "Bearer ${currentAccessToken.ifBlank { accessToken }}")
+                // 登录态优先用刷新后的 currentAccessToken，避免闭包里的旧值。
+                // preferCachedToken=false 时只认传进来的 token（校验「另一份还没落库的凭据」时必须这样）
+                val bearer = if (preferCachedToken) currentAccessToken.ifBlank { accessToken } else accessToken
+                builder.header("Authorization", "Bearer $bearer")
             }
             if (captchaToken.isNotBlank()) builder.header("X-Captcha-Token", captchaToken)
         return if (body != null) builder.post(body.toRequestBody(jsonMediaType)).build()
@@ -928,6 +996,36 @@ class XunleiApi(
     private fun md5Hex(input: String): String {
         val digest = MessageDigest.getInstance("MD5").digest(input.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * 迅雷中文口令（如「张三丰资源」）→ 带提取码的分享链接（免登录）。
+     *
+     * 口令是「分享链接 + 提取码」的打包形式：把口令当关键词打 shoulei 的搜索跳转接口，
+     * `ext.kouling_type == "share_page"` 时 `location` 就是带 `pwd` 的分享页地址（明文，无需解密）；
+     * 没有对应资源时只返回 `search_url`，这里按「口令无效」抛出。
+     * 纯逻辑（判定 / 拼 URL / 解 location）在 [XunleiKouling]，便于单测。
+     */
+    suspend fun parseKouling(keyword: String): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(XunleiKouling.buildJumpUrl(keyword))
+            .header("User-Agent", XunleiKouling.USER_AGENT)
+            .header("Accept", "*/*")
+            .header("Origin", XunleiKouling.ORIGIN)
+            .header("Referer", XunleiKouling.REFERER)
+            .header("Accept-Language", "zh-CN")
+            .get()
+            .build()
+        client.newCall(request).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IllegalStateException("口令解析失败（HTTP ${resp.code}）")
+            val json = runCatching { JSONObject(body) }.getOrNull()
+                ?: throw IllegalStateException("口令解析失败：响应格式异常")
+            val type = json.optJSONObject("ext")?.optString("kouling_type").orEmpty()
+            if (type != "share_page") throw IllegalStateException("口令「$keyword」没有对应的网盘分享")
+            XunleiKouling.shareUrlFromLocation(json.optString("location"))
+                ?: throw IllegalStateException("口令「$keyword」没有对应的网盘分享")
+        }
     }
 
     companion object {

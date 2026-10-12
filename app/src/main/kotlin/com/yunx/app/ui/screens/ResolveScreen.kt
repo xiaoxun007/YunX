@@ -107,6 +107,7 @@ import com.yunx.app.ui.resolve.ShareDetailScreen
 import com.yunx.app.ui.viewmodel.BaiduCloudViewModel
 import com.yunx.app.ui.viewmodel.BookmarkViewModel
 import com.yunx.app.ui.viewmodel.C139CloudViewModel
+import com.yunx.app.ui.viewmodel.GuangYaCloudViewModel
 import com.yunx.app.ui.viewmodel.Pan115CloudViewModel
 import com.yunx.app.ui.viewmodel.Pan123CloudViewModel
 import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
@@ -143,6 +144,8 @@ fun ResolveScreen(
     pan123CloudViewModel: Pan123CloudViewModel,
     /** 115 网盘浏览 ViewModel（115 分享转存目录选择用） */
     pan115CloudViewModel: Pan115CloudViewModel,
+    /** 光鸭云盘浏览 ViewModel（光鸭分享转存目录选择用） */
+    guangyaCloudViewModel: GuangYaCloudViewModel,
     /** 收藏 ViewModel：主页快捷方式（已添加到主页的收藏链接）数据源 */
     bookmarkViewModel: BookmarkViewModel,
     /** 打开「收藏网盘链接」页（主页快捷方式区块的「管理」入口） */
@@ -274,6 +277,7 @@ fun ResolveScreen(
             ucCloudViewModel = ucCloudViewModel,
             pan123CloudViewModel = pan123CloudViewModel,
             pan115CloudViewModel = pan115CloudViewModel,
+            guangyaCloudViewModel = guangyaCloudViewModel,
             scrollBehavior = scrollBehavior,
             listState = detailListState,
             scrollPositions = detailScrollPositions,
@@ -516,7 +520,7 @@ private fun ResolveInputContent(
             value = link,
             onValueChange = onLinkChange,
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("例如：https://pan.quark.cn/s/xxxx") },
+            placeholder = { Text("例如：https://pan.quark.cn/s/xxxx 或 迅雷口令") },
             leadingIcon = { Icon(Icons.Outlined.Link, contentDescription = null) },
             trailingIcon = {
                 if (link.isNotEmpty()) {
@@ -818,6 +822,9 @@ private fun platformShortLabel(platform: String): String? = when (platform) {
     "C139" -> "139"
     "PAN123" -> "123"
     "PAN115" -> "115"
+    "GUANGYA" -> "光鸭"
+    "ILANZOU" -> "优享"
+    "LANZOU" -> "蓝奏"
     "GITHUB" -> "GitHub"
     "GENERIC" -> "直链"
     else -> null
@@ -869,6 +876,9 @@ private fun platformLabel(platform: SharePlatform): String = when (platform) {
     SharePlatform.C139 -> "139 网盘"
     SharePlatform.PAN123 -> "123云盘"
     SharePlatform.PAN115 -> "115网盘"
+    SharePlatform.GUANGYA -> "光鸭云盘"
+    SharePlatform.ILANZOU -> "蓝奏云优享版"
+    SharePlatform.LANZOU -> "蓝奏云"
     SharePlatform.GITHUB -> "GitHub"
     SharePlatform.GENERIC -> "文件直链"
 }
@@ -940,9 +950,9 @@ private fun ClipboardSuggestCard(
 @Composable
 private fun GitHubBadge(label: String) {
     val (bg, fg) = when (label) {
-        "最新" -> androidx.compose.ui.graphics.Color(0xFF2DA44E) to androidx.compose.ui.graphics.Color.White
-        "预发布" -> androidx.compose.ui.graphics.Color(0xFFBF8700) to androidx.compose.ui.graphics.Color.White
-        "草稿" -> androidx.compose.ui.graphics.Color(0xFF6E7681) to androidx.compose.ui.graphics.Color.White
+        "最新" -> MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
+        "预发布" -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
+        "草稿" -> MaterialTheme.colorScheme.surfaceContainerHighest to MaterialTheme.colorScheme.onSurface
         else -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
     }
     Box(

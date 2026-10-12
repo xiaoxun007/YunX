@@ -16,7 +16,8 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -24,6 +25,10 @@
     <!-- Android 16 实时更新（OPPO ColorOS 16 流体云按此规范接入）：把下载进度提升为「进行中」通知 -->
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 下载调试：读取当前网络类型 / 是否计费 / 链路速率估计（普通权限，安装即授予，无运行时弹窗；
+         蜂窝代际 5G/4G 与真正的信号强度还需要 READ_PHONE_STATE / ACCESS_WIFI_STATE 等权限，
+         本项目不申请，日志里只记「未区分」，改用系统给的链路速率估计当网络质量指标） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 锁屏保持下载：息屏时维持 Wi-Fi/CPU，避免长时间下载断连 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 锁屏保持下载：允许引导用户将应用加入「忽略电池优化」白名单 -->
@@ -34,6 +39,14 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
+    <!-- 内置下载引擎（Gopeed）只能按真实文件系统路径写文件：Android 11+ 要写公共 Download 目录
+         就得有「所有文件访问」。低版本不需要（9- 用上面的 WRITE_EXTERNAL_STORAGE，
+         10 由 application 的 requestLegacyExternalStorage 回到旧模式 + 同一运行时权限）。
+         用户需在系统设置里手动开启，PermissionState.allFilesAccessGranted 判断，
+         不给也能用——引擎会自动退到应用外部私有目录（见 Agent.md §3.29）。 -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
         android:name=".YunXApp"

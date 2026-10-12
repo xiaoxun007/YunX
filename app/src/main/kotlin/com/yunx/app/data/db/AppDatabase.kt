@@ -26,10 +26,12 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.yunx.app.data.security.AndroidKeystoreCredentialCipher
 import com.yunx.app.data.security.CredentialCipher
+import com.yunx.app.data.security.CredentialStore
+import com.yunx.app.util.DiagnosticLog
 
 @Database(
-    entities = [QuarkAccountEntity::class, DownloadTaskEntity::class, UCAccountEntity::class, XunleiAccountEntity::class, BaiduAccountEntity::class, C139AccountEntity::class, Pan123AccountEntity::class, Pan115AccountEntity::class, BookmarkEntity::class],
-    version = 16,
+    entities = [QuarkAccountEntity::class, DownloadTaskEntity::class, UCAccountEntity::class, XunleiAccountEntity::class, BaiduAccountEntity::class, C139AccountEntity::class, Pan123AccountEntity::class, Pan115AccountEntity::class, GuangYaAccountEntity::class, ILanzouAccountEntity::class, LanzouAccountEntity::class, BookmarkEntity::class],
+    version = 19,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -50,6 +52,12 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract fun rawPan115AccountDao(): Pan115AccountDao
 
+    abstract fun rawGuangYaAccountDao(): GuangYaAccountDao
+
+    abstract fun rawILanzouAccountDao(): ILanzouAccountDao
+
+    abstract fun rawLanzouAccountDao(): LanzouAccountDao
+
     abstract fun bookmarkDao(): BookmarkDao
 
     private lateinit var credentialCipher: CredentialCipher
@@ -61,6 +69,9 @@ abstract class AppDatabase : RoomDatabase() {
     fun c139AccountDao(): C139AccountDao = SecureAccountDaos.c139(rawC139AccountDao(), credentialCipher)
     fun pan123AccountDao(): Pan123AccountDao = SecureAccountDaos.pan123(rawPan123AccountDao(), credentialCipher)
     fun pan115AccountDao(): Pan115AccountDao = SecureAccountDaos.pan115(rawPan115AccountDao(), credentialCipher)
+    fun guangyaAccountDao(): GuangYaAccountDao = SecureAccountDaos.guangya(rawGuangYaAccountDao(), credentialCipher)
+    fun ilanzouAccountDao(): ILanzouAccountDao = SecureAccountDaos.ilanzou(rawILanzouAccountDao(), credentialCipher)
+    fun lanzouAccountDao(): LanzouAccountDao = SecureAccountDaos.lanzou(rawLanzouAccountDao(), credentialCipher)
 
     companion object {
         @Volatile
@@ -80,13 +91,62 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_12_13,
                         MIGRATION_13_14,
                         MIGRATION_14_15,
-                        MIGRATION_15_16
+                        MIGRATION_15_16,
+                        MIGRATION_16_17,
+                        MIGRATION_17_18,
+                        MIGRATION_18_19
                     )
                     // 早期开发版（1-8）无可靠 schema；从 v9 起必须保留凭证和下载任务
                     .fallbackToDestructiveMigrationFrom(1, 2, 3, 4, 5, 6, 7, 8)
+                    .addCallback(object : RoomDatabase.Callback() {
+                        /** 诊断模式：库建/开时记一条（版本 + 全部业务表），排查「表不存在 / 迁移没跑」最有用 */
+                        override fun onCreate(db: SupportSQLiteDatabase) = logSchema("create", db)
+
+                        override fun onOpen(db: SupportSQLiteDatabase) = logSchema("open", db)
+
+                        private fun logSchema(action: String, db: SupportSQLiteDatabase) {
+                            runCatching {
+                                val tables = mutableListOf<String>()
+                                db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c ->
+                                    while (c.moveToNext()) {
+                                        val name = c.getString(0) ?: continue
+                                        // sqlite/room 自己的内部表不算业务表
+                                        if (!name.startsWith("sqlite_") && !name.startsWith("android_") && name != "room_master_table") {
+                                            tables.add(name)
+                                        }
+                                    }
+                                }
+                                val version = runCatching { db.version }.getOrDefault(-1)
+                                DiagnosticLog.log(
+                                    DiagnosticLog.DB,
+                                    "db_$action",
+                                    status = "v$version",
+                                    size = tables.size.toLong(),
+                                    summary = "file=yunx.db | tables=${tables.joinToString(",")}"
+                                )
+                                // 顺手把每张表的行数也记一笔（只在诊断模式开启时执行，且只在库打开那一次）
+                                if (DiagnosticLog.isEnabled()) {
+                                    tables.forEach { table ->
+                                        runCatching {
+                                            db.query("SELECT COUNT(*) FROM $table").use { c ->
+                                                if (c.moveToFirst()) DiagnosticLog.db(table, "count", 0L, c.getInt(0))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    })
                     .build()
                     .also { database ->
-                        database.credentialCipher = AndroidKeystoreCredentialCipher()
+                        database.credentialCipher = AndroidKeystoreCredentialCipher.shared
+                        // 密钥若是「新建」的，说明此前存下的密文必然由另一把（已失效的）密钥加密。
+                        // 这里只**记录**这件事（写一个 SharedPreferences 标记），不删任何数据：
+                        // 各存储路径自己按「解密失败 → 清掉这一条」自愈（DAO 的 decryptGuarded、
+                        // GitHubTokenStore.getToken、DownloadManager.loadPersistedHeaders），
+                        // 在这里无差别清空账号表风险太大——判断稍有偏差就会白白抹掉用户的登录态。
+                        // 主装配点在 YunXApp.onCreate（必须早于任何凭证读写），这里再兜一次。
+                        CredentialStore.installRecovery(context)
                         instance = database
                     }
             }
@@ -151,6 +211,61 @@ abstract class AppDatabase : RoomDatabase() {
                         "`nickname` TEXT NOT NULL, " +
                         "`updatedAt` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
+        /** v17：下载任务记录 Gopeed 引擎任务 ID（空串 = 内置分片下载器） */
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `download_task` ADD COLUMN `engineTaskId` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        /** v18：新增光鸭云盘 / 蓝奏云优享版 / 蓝奏云登录凭证表（凭证落库前在 SecureAccountDaos 里加密） */
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `guangya_account` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`accessToken` TEXT NOT NULL, " +
+                        "`refreshToken` TEXT NOT NULL, " +
+                        "`deviceId` TEXT NOT NULL, " +
+                        "`deviceSign` TEXT NOT NULL, " +
+                        "`account` TEXT NOT NULL, " +
+                        "`nickname` TEXT NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `ilanzou_account` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`appToken` TEXT NOT NULL, " +
+                        "`uuid` TEXT NOT NULL, " +
+                        "`account` TEXT NOT NULL, " +
+                        "`password` TEXT NOT NULL, " +
+                        "`userId` TEXT NOT NULL, " +
+                        "`nickname` TEXT NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `lanzou_account` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`cookie` TEXT NOT NULL, " +
+                        "`nickname` TEXT NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
+        private val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `xunlei_account` ADD COLUMN `authType` TEXT NOT NULL DEFAULT ''"
                 )
             }
         }

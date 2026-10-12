@@ -58,6 +58,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
@@ -93,6 +94,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -107,6 +109,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.yunx.app.data.db.DownloadTaskEntity
 import com.yunx.app.data.download.DownloadStats
+import com.yunx.app.data.download.MagnetLink
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.ui.viewmodel.DownloadViewModel
 import com.yunx.app.ui.components.DoubleTapScrollToTopArea
@@ -130,7 +133,9 @@ fun DownloadScreen(
     /** 需定位的任务 id（下载入队后由解析页传入）：单文件滑到该任务，文件夹滑到其顶级目录分组 */
     scrollTaskId: Long? = null,
     /** 定位完成（或找不到）后回调，由调用方清空定位请求 */
-    onScrollTaskConsumed: () -> Unit = {}
+    onScrollTaskConsumed: () -> Unit = {},
+    /** 下载调试开关（设置 → 关于云析 → 长按 → 开发调试）：开启后长按任务菜单里出现「调试信息」 */
+    downloadDebug: Boolean = false
 ) {
     val context = LocalContext.current
     val tasks by viewModel.tasks.collectAsState()
@@ -174,6 +179,23 @@ fun DownloadScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<DownloadTaskEntity?>(null) }
     var showDeleteAllConfirm by remember { mutableStateOf(false) }
+    // 「调试信息」页打开的任务 id（null = 不显示）。本页在「下载」Tab 内全屏展开，与 ResolveScreen 内嵌
+    // ShareDetailScreen 同款（不是 MainScreen 的叠加页，可直接复用下载页的卡片与格式化口径）。
+    var debugTaskId by rememberSaveable { mutableStateOf<Long?>(null) }
+    // 任务可能在调试页打开期间被删除：取不到就自动退回列表（不用再手动关页）
+    val debugTask = debugTaskId?.let { id -> tasks.firstOrNull { it.id == id } }
+    if (debugTask != null) {
+        DownloadDebugScreen(
+            task = debugTask,
+            stats = stats[debugTask.id],
+            viewModel = viewModel,
+            onPause = { viewModel.pause(debugTask.id) },
+            onResume = { viewModel.resume(debugTask.id) },
+            onBack = { debugTaskId = null },
+            modifier = modifier
+        )
+        return
+    }
 
     // Android 9- 写公共目录需要 WRITE_EXTERNAL_STORAGE
     val needLegacyPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
@@ -231,7 +253,9 @@ fun DownloadScreen(
                             onPause = { viewModel.pause(task.id) },
                             onResume = { viewModel.resume(task.id) },
                             onRemove = { pendingDelete = task },
-                            onRedownload = { viewModel.redownload(task) }
+                            onRedownload = { viewModel.redownload(task) },
+                            downloadDebug = downloadDebug,
+                            onOpenDebug = { debugTaskId = it }
                         )
                     }
 
@@ -244,7 +268,9 @@ fun DownloadScreen(
                                 onPause = { viewModel.pause(it) },
                                 onResume = { viewModel.resume(it) },
                                 onRemove = { pendingDelete = it },
-                                onRedownload = { viewModel.redownload(it) }
+                                onRedownload = { viewModel.redownload(it) },
+                                downloadDebug = downloadDebug,
+                                onOpenDebug = { debugTaskId = it }
                             )
                         }
                     }
@@ -257,7 +283,25 @@ fun DownloadScreen(
             state = listState,
             modifier = Modifier.align(Alignment.TopStart)
         )
+
+        // 添加任务 FAB（手动粘贴直链 / 磁力链接的唯一入口）
+        // ★ 曾经被 c829083「添加关于页」误删（连同 permissionLauncher/hasPermission 变成死代码、
+        //   空状态文案却还在说「点击右下角按钮」）——恢复时注意别再连着删掉。
+        FloatingActionButton(
+            onClick = {
+                if (needLegacyPermission && !hasPermission) {
+                    permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                } else {
+                    showAddDialog = true
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(20.dp)
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = "添加下载任务")
         }
+    }
 
     if (showAddDialog) {
         AddDownloadDialog(
@@ -507,7 +551,10 @@ private fun FolderDownloadGroup(
     onPause: (Long) -> Unit,
     onResume: (Long) -> Unit,
     onRemove: (DownloadTaskEntity) -> Unit,
-    onRedownload: (DownloadTaskEntity) -> Unit
+    onRedownload: (DownloadTaskEntity) -> Unit,
+    /** 下载调试：开启时组内子任务的长按菜单也出现「调试信息」 */
+    downloadDebug: Boolean = false,
+    onOpenDebug: (Long) -> Unit = {}
 ) {
     var expanded by remember { mutableStateOf(true) }
     val completed = tasks.count { it.status == DownloadTaskEntity.STATUS_COMPLETED }
@@ -611,9 +658,7 @@ private fun FolderDownloadGroup(
                             progress = { fraction },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 14.dp)
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp)),
+                                .padding(horizontal = 14.dp),
                             color = MaterialTheme.colorScheme.primary,
                             trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                             waving = tasks.any { it.status == DownloadTaskEntity.STATUS_DOWNLOADING }
@@ -631,7 +676,9 @@ private fun FolderDownloadGroup(
                                 onPause = { onPause(task.id) },
                                 onResume = { onResume(task.id) },
                                 onRemove = { onRemove(task) },
-                                onRedownload = { onRedownload(task) }
+                                onRedownload = { onRedownload(task) },
+                                downloadDebug = downloadDebug,
+                                onOpenDebug = onOpenDebug
                             )
                         }
                     }
@@ -652,7 +699,10 @@ private fun DownloadSubTaskRow(
     onPause: () -> Unit,
     onResume: () -> Unit,
     onRemove: () -> Unit,
-    onRedownload: () -> Unit
+    onRedownload: () -> Unit,
+    /** 下载调试开启时长按菜单出现「调试信息」 */
+    downloadDebug: Boolean = false,
+    onOpenDebug: (Long) -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDownloading = task.status == DownloadTaskEntity.STATUS_DOWNLOADING ||
@@ -726,38 +776,36 @@ private fun DownloadSubTaskRow(
                 // 主操作（暂停/继续/重试/打开）
                 when (task.status) {
                     DownloadTaskEntity.STATUS_DOWNLOADING,
-                    DownloadTaskEntity.STATUS_PENDING -> IconButton(onClick = onPause, modifier = Modifier.size(32.dp)) {
+                    DownloadTaskEntity.STATUS_PENDING -> IconButton(onClick = onPause, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.Outlined.Pause, contentDescription = "暂停",
                             tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
                         )
                     }
-                    DownloadTaskEntity.STATUS_PAUSED -> IconButton(onClick = onResume, modifier = Modifier.size(32.dp)) {
+                    DownloadTaskEntity.STATUS_PAUSED -> IconButton(onClick = onResume, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.Outlined.PlayArrow, contentDescription = "继续",
                             tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
                         )
                     }
-                    DownloadTaskEntity.STATUS_FAILED -> IconButton(onClick = onResume, modifier = Modifier.size(32.dp)) {
+                    DownloadTaskEntity.STATUS_FAILED -> IconButton(onClick = onResume, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.Outlined.Refresh, contentDescription = "重试",
                             tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)
                         )
                     }
-                    DownloadTaskEntity.STATUS_COMPLETED -> {
-                        IconButton(
-                            onClick = { openSavedFile(context, task.savePath) },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                Icons.Outlined.OpenInNew, contentDescription = "打开",
-                                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
-                            )
-                        }
+                    DownloadTaskEntity.STATUS_COMPLETED -> IconButton(
+                        onClick = { openSavedFile(context, task.savePath) },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            Icons.Outlined.OpenInNew, contentDescription = "打开",
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
                 // 删除
-                IconButton(onClick = onRemove, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onRemove, modifier = Modifier.size(48.dp)) {
                     Icon(
                         Icons.Outlined.Delete, contentDescription = "删除",
                         tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)
@@ -774,9 +822,7 @@ private fun DownloadSubTaskRow(
                     progress = { fraction },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 6.dp)
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(1.5f)),
+                        .padding(top = 6.dp),
                     color = if (task.status == DownloadTaskEntity.STATUS_FAILED) {
                         MaterialTheme.colorScheme.error
                     } else {
@@ -827,6 +873,16 @@ private fun DownloadSubTaskRow(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("删除任务")
                         }
+                        if (downloadDebug) {
+                            TextButton(onClick = {
+                                showMenu = false
+                                onOpenDebug(task.id)
+                            }) {
+                                Icon(Icons.Outlined.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("调试信息")
+                            }
+                        }
                     }
                 },
                 confirmButton = {
@@ -844,7 +900,10 @@ private fun DownloadTaskCard(
     onPause: () -> Unit,
     onResume: () -> Unit,
     onRemove: () -> Unit,
-    onRedownload: () -> Unit
+    onRedownload: () -> Unit,
+    /** 下载调试开启时长按菜单出现「调试信息」 */
+    downloadDebug: Boolean = false,
+    onOpenDebug: (Long) -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDownloading = task.status == DownloadTaskEntity.STATUS_DOWNLOADING ||
@@ -1073,6 +1132,16 @@ private fun DownloadTaskCard(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("删除任务")
                         }
+                        if (downloadDebug) {
+                            TextButton(onClick = {
+                                showMenu = false
+                                onOpenDebug(task.id)
+                            }) {
+                                Icon(Icons.Outlined.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("调试信息")
+                            }
+                        }
                     }
                 },
                 confirmButton = {
@@ -1088,7 +1157,15 @@ private fun copyToClipboard(context: Context, text: String) {
     cm.setPrimaryClip(ClipData.newPlainText("yunx_url", text))
 }
 
-private fun taskStatusLine(task: DownloadTaskEntity): String {
+internal fun taskStatusLine(task: DownloadTaskEntity): String {
+    // 磁力任务在引擎拿到元数据之前 totalSize 一直是 0：这时按进度显示会变成「下载中」却没有任何数字，
+    // 看起来像卡死。BT 的元数据要等 DHT/tracker 找到 peer，慢起来是分钟级，明说在解析更诚实。
+    if (task.status == DownloadTaskEntity.STATUS_DOWNLOADING &&
+        task.totalSize <= 0 &&
+        MagnetLink.isMagnet(task.url)
+    ) {
+        return "正在解析磁力（等待元数据，可能需要一两分钟）"
+    }
     val status = DownloadTaskEntity.statusText(task.status)
     return if (task.totalSize > 0) {
         // 显示值钳制到 total（防恢复竞态残留导致显示超总大小）
@@ -1099,7 +1176,7 @@ private fun taskStatusLine(task: DownloadTaskEntity): String {
     }
 }
 
-private fun progressText(task: DownloadTaskEntity): String {
+internal fun progressText(task: DownloadTaskEntity): String {
     if (task.totalSize <= 0) return ""
     // 显示值钳制到 total（防恢复竞态残留导致显示超总大小）
     val shown = minOf(task.downloadedSize, task.totalSize)
@@ -1107,7 +1184,7 @@ private fun progressText(task: DownloadTaskEntity): String {
     return "已下载 ${formatSize(shown)} / ${formatSize(task.totalSize)} · $percent%"
 }
 
-private fun formatSize(bytes: Long): String {
+internal fun formatSize(bytes: Long): String {
     if (bytes <= 0) return "0 B"
     val units = arrayOf("B", "KB", "MB", "GB", "TB")
     var value = bytes.toDouble()
@@ -1119,7 +1196,7 @@ private fun formatSize(bytes: Long): String {
     return String.format("%.1f %s", value, units[i])
 }
 
-private fun formatSpeed(bytesPerSec: Long): String {
+internal fun formatSpeed(bytesPerSec: Long): String {
     if (bytesPerSec <= 0) return "0 B/s"
     val units = arrayOf("B/s", "KB/s", "MB/s", "GB/s")
     var value = bytesPerSec.toDouble()
@@ -1131,7 +1208,7 @@ private fun formatSpeed(bytesPerSec: Long): String {
     return String.format("%.1f %s", value, units[i])
 }
 
-private fun formatRemain(millis: Long): String {
+internal fun formatRemain(millis: Long): String {
     if (millis < 0) return "计算中"
     val sec = millis / 1000
     return when {
@@ -1204,6 +1281,7 @@ private fun AddDownloadDialog(
 ) {
     var url by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
+    val isMagnet = MagnetLink.isMagnet(url)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1226,17 +1304,32 @@ private fun AddDownloadDialog(
                     value = url,
                     onValueChange = {
                         url = it
-                        if (name.isBlank()) name = it.substringAfterLast('/').take(80)
+                        // 磁力链接的落盘名字由种子决定（引擎解析出元数据才知道），这里先拿 dn= 里的显示名占位
+                        if (name.isBlank()) {
+                            name = if (MagnetLink.isMagnet(it)) {
+                                MagnetLink.displayName(it)
+                            } else {
+                                it.substringAfterLast('/').take(80)
+                            }
+                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("文件直链 URL") },
+                    placeholder = { Text("文件直链 URL 或磁力链接") },
                     singleLine = true
                 )
+                if (isMagnet) {
+                    // 磁力只有 Gopeed 内核能下（内置分片下载器是纯 HTTP 实现），提前说清楚省得白等
+                    Text(
+                        text = "磁力链接需要 Gopeed 引擎：内核未导入或未切换时会直接提示，不会被当成普通链接去下载",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("保存文件名") },
+                    placeholder = { Text(if (isMagnet) "显示名称（可留空，完成后会用种子名覆盖）" else "保存文件名") },
                     singleLine = true
                 )
             }
@@ -1244,7 +1337,8 @@ private fun AddDownloadDialog(
         confirmButton = {
             Button(
                 onClick = { onConfirm(url.trim(), name.trim()) },
-                enabled = url.isNotBlank() && name.isNotBlank()
+                // 磁力允许留空文件名：真正的名字要等引擎拿到元数据（DownloadManager 会自己兜底）
+                enabled = url.isNotBlank() && (name.isNotBlank() || isMagnet)
             ) { Text("开始下载") }
         },
         dismissButton = {

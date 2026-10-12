@@ -83,6 +83,14 @@ class YunXApp : Application() {
         }
         scheduleDeepScan(this)
         com.yunx.app.data.network.XunleiDeviceFingerprint.init(this)
+        // 123 云盘的设备标识（loginuuid）：账号密码登录与所有业务请求都要带，必须跨启动保持稳定，
+        // 否则服务端会把每次启动都当成新设备（登录更容易被要求过验证）
+        com.yunx.app.data.network.Pan123DeviceId.install(this)
+        // 本机密钥失效自愈：必须在**任何**凭证读写之前装配。改锁屏密码/指纹会让 Android Keystore
+        // 里的密钥被系统永久作废（KeyPermanentlyInvalidatedException / Key not found / Invalid
+        // key blob 三种形态），此时要记下「登录态已失效」的一次性提示，而不是把 Keystore 异常
+        // 抛到主线程把 App 崩掉（1.2.8 的三份崩溃报告）。
+        com.yunx.app.data.security.CredentialStore.installRecovery(this)
         // 启动时恢复用户配置的 HTTP 代理（任何异常都不得影响应用启动）
         runCatching {
             val prefs = getSharedPreferences("yunx_settings", Context.MODE_PRIVATE)
@@ -101,6 +109,12 @@ class YunXApp : Application() {
             com.yunx.app.data.network.HttpClients.setForceIpv4(prefs.getBoolean("force_ipv4", true))
         }
         purgeDownloadLeftovers(this)
+        // 诊断日志：读开关（默认关）并定好落盘目录；开着才起写线程，关着这里几乎零开销
+        com.yunx.app.util.DiagnosticLog.install(this)
+        // 下载调试：读开关（默认关）。必须在任何下载开始之前装配，否则开关打开后先建的任务收不到事件
+        com.yunx.app.data.download.DownloadDebugLog.install(this)
+        // 选了 Gopeed 引擎且已导入内核：启动就把它加载起来（失败只记日志，绝不影响应用启动）
+        autoStartGopeedIfSelected(this)
     }
 
     /**
@@ -121,6 +135,35 @@ class YunXApp : Application() {
 private fun purgeDownloadLeftovers(ctx: Context) {
     Thread {
         runCatching { com.yunx.app.data.download.DownloadSaver.purgeOwnPendingFiles(ctx) }
+    }.start()
+}
+
+/**
+ * 选了 Gopeed 引擎时，应用启动就把引擎加载起来（只有导入过内核才做，见 Agent.md §3.32）。
+ *
+ * 引擎是进程内单例，首次加载要 System.load 56 MB 的 .so 并初始化 Go runtime，提前加载能让第一个
+ * 下载任务不必等它；**任何失败都只记日志** —— 引擎起不来不能影响应用启动，下载侧会按失败任务处理。
+ *
+ * 另外无论选的是哪个下载器，都在这里把引擎的内存状态与真实文件对齐一次（`syncInstalledState`）：
+ * 选内置下载器时下面会直接 return、整条启动流程都不会碰引擎，不对齐的话引擎页会以为「未导入内核」。
+ */
+private fun autoStartGopeedIfSelected(ctx: Context) {
+    val engine = com.yunx.app.data.gopeed.GopeedEngine
+    val settingsRepo = com.yunx.app.data.prefs.SettingsRepository(ctx)
+    engine.syncInstalledState(ctx)
+    if (settingsRepo.downloadEngine != com.yunx.app.data.prefs.SettingsRepository.ENGINE_GOPEED) return
+    if (!engine.isInstalled(ctx)) {
+        // 内核被删了（或从没导入过）但设置还停在 Gopeed：自愈回内置下载器，避免"设置说在用引擎、
+        // 实际跑的是内置下载器"的错位（与下载引擎页删内核时的处理一致）。
+        settingsRepo.downloadEngine = com.yunx.app.data.prefs.SettingsRepository.ENGINE_BUILTIN
+        return
+    }
+    Thread {
+        runCatching {
+            engine.start(ctx, engine.resolveDownloadDir(ctx))
+        }.onFailure {
+            android.util.Log.e("YunX", "启动时自动加载 Gopeed 引擎失败：${it.message}", it)
+        }
     }.start()
 }
 

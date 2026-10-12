@@ -48,20 +48,25 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilterChip
@@ -70,14 +75,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -97,6 +100,8 @@ import androidx.compose.ui.unit.sp
 import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.ui.SnackbarController
+import com.yunx.app.ui.components.OperationSheet
+import com.yunx.app.ui.components.LocalFileOperationBusy
 import com.yunx.app.ui.components.FileNameText
 import com.yunx.app.ui.rememberGlobalSnackbarHostState
 import com.yunx.app.ui.resolve.BackToParentItem
@@ -146,15 +151,7 @@ internal fun FileActionSheet(
 ) {
     var step by remember { mutableStateOf(ActionStep.MENU) }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = {
-            if (!operating) onDismiss()
-        },
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
+    OperationSheet(busy = operating, onDismiss = onDismiss) {
         // 步骤切换统一带过渡（六平台一致）
         AnimatedContent(
             targetState = step,
@@ -200,7 +197,6 @@ internal fun FileActionSheet(
                     file = file,
                     operating = operating,
                     onBack = { step = ActionStep.MENU },
-                    onDone = onDismiss,
                     onRename = onRename
                 )
 
@@ -256,6 +252,123 @@ internal fun FileSheetHeader(file: ShareFile) {
     }
 }
 
+/**
+ * 网盘页顶栏的「+」按钮 + 下拉菜单（七个云盘页共用，Agent.md §3.26）。
+ *
+ * 只挂在**个人盘**页面：各家文档都写明「新建目录 / 上传」必须在个人盘模式下可用，
+ * 分享浏览页（`ShareDetailScreen`）不挂这个入口。
+ *
+ * @param onUploadFile 上传协议尚未接入时的占位：传 null（默认）时菜单项置灰并标「开发中」，
+ *   等上传落地后由各页把真实回调接上即可，不用改这个组件。
+ */
+@Composable
+internal fun CloudAddMenu(
+    onCreateFolder: () -> Unit,
+    onUploadFile: (() -> Unit)? = null
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(
+                imageVector = Icons.Outlined.Add,
+                contentDescription = "新建",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("创建文件夹") },
+                leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onCreateFolder()
+                }
+            )
+            DropdownMenuItem(
+                // 上传未接入前把「开发中」写在文案里：比灰掉一个没有说明的菜单项更容易看懂
+                text = { Text(if (onUploadFile == null) "上传文件（开发中）" else "上传文件") },
+                leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
+                onClick = {
+                    expanded = false
+                    onUploadFile?.invoke()
+                },
+                enabled = onUploadFile != null
+            )
+        }
+    }
+}
+
+/**
+ * 文件夹名校验（各平台文档的建目录小节只给了这套客户端规则）：
+ * 非空、不是 `.` / `..`、不含 `/` `\` 与控制字符；长度上限各家文档都没写，这里只挡 255 防呆。
+ *
+ * @return 不合法的原因（给用户看）；合法返回 null
+ */
+internal fun cloudNameError(raw: String): String? {
+    val name = raw.trim()
+    return when {
+        name.isEmpty() -> "名称不能为空"
+        name == "." || name == ".." -> "名称不能是 . 或 .."
+        name.length > 255 -> "名称最多 255 个字符"
+        name.any { it == '/' || it == '\\' || it.code < 0x20 } -> "名称不能含 / \\ 或控制字符"
+        else -> null
+    }
+}
+
+/**
+ * 新建文件夹弹窗（七个云盘页共用）：只做本地名称校验，创建请求由各页 ViewModel 发出。
+ * 失败与成功提示统一走各页既有的 `cloudMessage` → Snackbar 通道，所以这里确认后立刻关闭。
+ */
+@Composable
+internal fun CreateFolderDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var touched by remember { mutableStateOf(false) }
+    val error = cloudNameError(name)
+    val showError = touched && error != null
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("创建文件夹") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = {
+                        name = it
+                        touched = true
+                    },
+                    label = { Text("文件夹名称") },
+                    singleLine = true,
+                    isError = showError,
+                    supportingText = {
+                        Text(
+                            text = if (showError) error!! else "创建在当前目录下",
+                            color = if (showError) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name.trim()) },
+                enabled = error == null
+            ) {
+                Text("创建")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
 /** 操作菜单主界面 */
 @Composable
 private fun ActionMenu(
@@ -270,6 +383,7 @@ private fun ActionMenu(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp)
     ) {
         // 标题
@@ -343,7 +457,7 @@ internal fun ActionItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = !LocalFileOperationBusy.current, onClick = onClick)
             .padding(vertical = 10.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -469,7 +583,7 @@ internal fun QuarkMoveStep(
             enabled = !operating,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp)
+                .heightIn(min = 50.dp)
         ) {
             if (operating) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -513,6 +627,7 @@ private fun ShareStep(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp)
     ) {
         StepHeader(title = title, subtitle = subtitle, onBack = onBack)
@@ -527,6 +642,7 @@ private fun ShareStep(
                 // 间距置 0 + checkedShape 指回未选中形状：避免两段之间出现缝/豁口（选中态由填充色表达）
                 ButtonGroup(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
                     ToggleButton(
+                        enabled = !operating,
                         checked = !withPassword,
                         onCheckedChange = { withPassword = false },
                         shapes = ButtonGroupDefaults.connectedLeadingButtonShapes(
@@ -536,6 +652,7 @@ private fun ShareStep(
                         Text("无提取码")
                     }
                     ToggleButton(
+                        enabled = !operating,
                         checked = withPassword,
                         onCheckedChange = {
                             withPassword = true
@@ -607,6 +724,7 @@ private fun ShareStep(
         ) {
             expireOptions.forEach { (name, value) ->
                 FilterChip(
+                    enabled = !operating,
                     selected = expiredType == value,
                     onClick = { expiredType = value },
                     label = { Text(name) },
@@ -639,7 +757,7 @@ private fun ShareStep(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp)
+                .heightIn(min = 50.dp)
         ) {
             if (operating) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -664,6 +782,7 @@ private fun PasscodeField(
         onValueChange = { onPasscodeChange(it.take(4).filter { c -> c.isLetterOrDigit() }) },
         modifier = Modifier.fillMaxWidth(),
         label = { Text(label) },
+        enabled = !LocalFileOperationBusy.current,
         singleLine = true,
         shape = MaterialTheme.shapes.large
     )
@@ -675,13 +794,14 @@ private fun RenameStep(
     file: ShareFile,
     operating: Boolean,
     onBack: () -> Unit,
-    onDone: () -> Unit,
     onRename: (String) -> Unit
 ) {
     var name by remember { mutableStateOf(file.fname) }
+    val nameError = cloudNameError(name)
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp)
     ) {
         StepHeader(title = "重命名", subtitle = file.fname, onBack = onBack)
@@ -691,25 +811,21 @@ private fun RenameStep(
             onValueChange = { name = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("新文件名") },
+            enabled = !operating,
+            isError = nameError != null,
+            supportingText = { nameError?.let { Text(it) } },
             singleLine = true,
             shape = MaterialTheme.shapes.large
         )
         Spacer(modifier = Modifier.height(20.dp))
         Button(
-            onClick = {
-                if (name.isNotBlank() && name != file.fname) {
-                    onRename(name.trim())
-                    onDone()
-                } else {
-                    onBack()
-                }
-            },
-            enabled = !operating && name.isNotBlank(),
+            onClick = { onRename(name.trim()) },
+            enabled = !operating && nameError == null && name.trim() != file.fname,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp)
+                .heightIn(min = 50.dp)
         ) {
-            Text("确认重命名")
+            Text(if (operating) "重命名中…" else "确认重命名")
         }
     }
 }
@@ -732,6 +848,7 @@ private fun ConfirmDeleteContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp)
     ) {
         Text("删除文件", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
@@ -751,7 +868,7 @@ private fun ConfirmDeleteContent(
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp)
+                .heightIn(min = 50.dp)
         ) {
             Text("删除")
         }
@@ -785,14 +902,7 @@ internal fun ConfirmDeleteSheet(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        // 操作进行中禁止下滑关闭：避免请求已发出、弹窗却先消失造成的状态错乱
-        onDismissRequest = { if (!operating) onDismiss() },
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
+    OperationSheet(busy = operating, onDismiss = onDismiss) {
         ConfirmDeleteContent(
             target = target,
             operating = operating,
@@ -897,7 +1007,7 @@ internal fun StepHeader(
     modifier: Modifier = Modifier
 ) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onBack) {
+        IconButton(onClick = onBack, enabled = !LocalFileOperationBusy.current) {
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "返回"
@@ -990,15 +1100,7 @@ internal fun BatchActionSheet(
 ) {
     var step by remember { mutableStateOf(initialStep) }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = {
-            if (!operating) onDismiss()
-        },
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
+    OperationSheet(busy = operating, onDismiss = onDismiss) {
         // 步骤切换带过渡：与单文件弹窗一致
         AnimatedContent(
             targetState = step,
@@ -1048,6 +1150,7 @@ private fun BatchMenu(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 32.dp)
     ) {
         // 标题

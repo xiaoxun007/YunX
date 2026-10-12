@@ -59,6 +59,7 @@ import com.yunx.app.data.network.XunleiConstants
 import com.yunx.app.ui.rememberGlobalSnackbarHostState
 import com.yunx.app.ui.components.YunXWavyLoading
 import org.json.JSONObject
+import com.yunx.app.util.DiagnosticLog
 
 private class XunleiJsBridge(
     private val onSuccess: (String) -> Unit,
@@ -123,12 +124,14 @@ fun XunleiVerifyWebViewScreen(
             settings.loadWithOverviewMode = true
             settings.layoutAlgorithm = WebSettings.LayoutAlgorithm.NARROW_COLUMNS
             settings.userAgentString = XunleiConstants.APP_UA
+            settings.suppressRequestedWithHeader()
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             if (trustedInitialUrl) attachVerificationBridge(this, bridge)
-            webViewClient = object : WebViewClient() {
+            webViewClient = object : DiagnosticWebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    DiagnosticLog.webview("page_started", url)
                     isLoading = true
                     if (!XunleiVerificationPolicy.isTrustedPage(url)) {
                         view?.stopLoading()
@@ -138,6 +141,7 @@ fun XunleiVerifyWebViewScreen(
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
+                    DiagnosticLog.webview("page_finished", url)
                     isLoading = false
                     if (XunleiVerificationPolicy.isTrustedPage(url)) {
                         view?.evaluateJavascript(buildInitScript(deviceId), null)

@@ -31,15 +31,20 @@ import org.json.JSONObject
  * GitHub Release 更新检测。
  * 正式版通道（默认）：GET https://api.github.com/repos/CYQawa/YunX/releases/latest
  * 预发布通道（设置页开启「接受预发布版更新」后）：GET https://api.github.com/repos/CYQawa/YunX/releases
+ *
+ * ★ 仓库路径参数化了（[repo]）：内核包下载走的是另一个仓库（`CYQawa/yunx_gopeed_build`，
+ *   见 `KernelProvisioner.KERNEL_REPO`）。Release 的抓取/解析**只此一份实现**，
+ *   不要为了第二个仓库再写一个平行的请求器。
  */
 object UpdateChecker {
 
-    private const val RELEASES_LATEST_URL =
-        "https://api.github.com/repos/CYQawa/YunX/releases/latest"
+    /** 本应用自己的仓库（更新检测默认走它） */
+    const val APP_REPO = "CYQawa/YunX"
+
+    private fun latestUrl(repo: String) = "https://api.github.com/repos/$repo/releases/latest"
 
     /** Release 列表（按发布时间倒序，含 Pre-release）：开启「接受预发布版更新」时用它取最新一条 */
-    private const val RELEASES_LIST_URL =
-        "https://api.github.com/repos/CYQawa/YunX/releases"
+    private fun listUrl(repo: String) = "https://api.github.com/repos/$repo/releases"
 
     /** 更新检测日志标签：失败原因一律 E 级打印，方便直接看 logcat 定位（断网 / 限流 / 无 Release） */
     private const val TAG = "YunX-Update"
@@ -72,7 +77,11 @@ object UpdateChecker {
 
     data class Asset(
         val name: String,
-        val downloadUrl: String
+        val downloadUrl: String,
+        /** 资产大小（GitHub API 的 size，字节）；缺省 0 = 未知（旧调用点不传） */
+        val size: Long = 0L,
+        /** 资产摘要，形如 `sha256:xxxx`；缺省空串 = 未知（GitHub 只在较新的响应里给） */
+        val digest: String = ""
     )
 
     data class Release(
@@ -105,6 +114,61 @@ object UpdateChecker {
             ?.getOrNull(1)
             ?.trim()
             ?.takeIf { it.isNotBlank() }
+
+    /** capsule-render 头图（波浪 banner）：只要 `<img>` 里出现这个域名就整段删掉（不依赖属性顺序） */
+    private val CAPSULE_BANNER_REGEX =
+        Regex("""<img\b[^>]*capsule-render\.vercel\.app[^>]*>""", RegexOption.IGNORE_CASE)
+
+    /**
+     * QQ 群徽章（带外链的形式）：`[![任意文字](https://img.shields.io/badge/...)](http://qm.qq.com/...)`
+     *
+     * ★ 必须排在裸图片规则**前面**（见 [DECORATION_REGEXES]）：先整体吃掉外层链接，
+     *   否则裸图片规则会把里面那截删掉，只剩一个 `[](http://qm.qq.com/...)` 的空链接。
+     */
+    private val QQ_BADGE_LINKED_REGEX = Regex(
+        """\[!\[[^\]]*]\(\s*https://img\.shields\.io/[^)\s]*\)]\(\s*https?://[^)\s]*qm\.qq\.com[^)\s]*\s*\)"""
+    )
+
+    /** QQ 群徽章（裸图片形式）：`![任意文字](https://img.shields.io/badge/...&logo=qq...)` */
+    private val QQ_BADGE_BARE_REGEX =
+        Regex("""!\[[^\]]*]\(\s*https://img\.shields\.io/[^)\s]*logo=qq[^)\s]*\)""")
+
+    /** Release 说明里对纯文本展示毫无意义、只该整段丢掉的装饰片段（顺序即执行顺序，别调换前两条） */
+    private val DECORATION_REGEXES =
+        listOf(CAPSULE_BANNER_REGEX, QQ_BADGE_LINKED_REGEX, QQ_BADGE_BARE_REGEX)
+
+    /**
+     * 过滤 Release 说明里对用户没用的装饰，只去这两类（**别扩大范围**，其余内容一字不动）：
+     *
+     * ① capsule-render 的头图 `<img src="https://capsule-render.vercel.app/api?..." />`；
+     * ② QQ 群徽章那一行 `[![QQ交流群](https://img.shields.io/badge/QQ%E7%BE%A4-...?logo=qq)](http://qm.qq.com/...)`。
+     *
+     * 为什么要在客户端去：`UpdateSheet` 是用**纯文本** `Text()` 显示说明正文的（没上 markdown/HTML 渲染），
+     * 这两样在 GitHub Release 页是图片，到我们这儿只会显示成一长串 URL，白占那 220dp 的高度。
+     * ★ 因此这里只认「capsule-render 的 img」和「指向 qm.qq.com / 带 logo=qq 的 shields.io 徽章」，
+     *   不认 shields.io 的其它徽章（别的徽章可能是有信息量的）。
+     *
+     * 整行只剩装饰时**整行删掉**（这两样都是独占一行），否则会在说明开头留下一片空行；
+     * 顺带把连续空行压成一个 —— markdown 本来就把多个空行当一个，压缩不改语义，只影响观感。
+     */
+    fun cleanReleaseNotes(body: String): String {
+        if (body.isBlank()) return body
+        val kept = ArrayList<String>()
+        for (line in body.lines()) {
+            val stripped = DECORATION_REGEXES.fold(line) { acc, regex -> regex.replace(acc, "") }.trim()
+            // 整行都是装饰 → 丢掉整行；本来就是空行的原样留着（后面统一压缩连续空行）
+            if (stripped.isEmpty() && line.isNotBlank()) continue
+            if (stripped.isEmpty()) {
+                if (kept.isNotEmpty() && kept.last().isEmpty()) continue
+                kept.add("")
+            } else {
+                // 行内还夹着装饰（如「文字 <img ...>」）时只去掉片段，其余文字原样保留
+                kept.add(stripped)
+            }
+        }
+        // trim() 顺手去掉说明开头/结尾的空行（正文第一个字符往往就是换行）
+        return kept.joinToString("\n").trim()
+    }
 
     /**
      * 比较两个版本号：v1 > v2 返回正数，v1 < v2 返回负数，相等返回 0。
@@ -146,12 +210,15 @@ object UpdateChecker {
      * 任何失败（网络异常 / HTTP 非 2xx / 响应缺字段）都在这里打 E 级日志，并把原因带回调用方，
      * 这样界面能提示「检查更新失败：HTTP 403 ……」而不是统一一句「请检查网络」。
      */
-    suspend fun fetchLatestRelease(includePrerelease: Boolean = false): CheckResult = withContext(Dispatchers.IO) {
+    suspend fun fetchLatestRelease(
+        includePrerelease: Boolean = false,
+        repo: String = APP_REPO
+    ): CheckResult = withContext(Dispatchers.IO) {
         runCatching {
-            if (includePrerelease) requestReleaseList() else requestLatestRelease()
+            if (includePrerelease) requestReleaseList(repo) else requestLatestRelease(repo)
         }
             .onFailure { e ->
-                Log.e(TAG, "获取最新 Release 异常：${e.javaClass.simpleName}: ${e.message}", e)
+                Log.e(TAG, "获取最新 Release 异常（$repo）：${e.javaClass.simpleName}: ${e.message}", e)
             }
             .getOrElse { e ->
                 CheckResult.Failure("${e.javaClass.simpleName}: ${e.message ?: "未知错误"}")
@@ -159,8 +226,8 @@ object UpdateChecker {
     }
 
     /** 正式版通道：GET /releases/latest，GitHub 保证返回最新的非 Pre-release、非 Draft 版本 */
-    private fun requestLatestRelease(): CheckResult {
-        return when (val body = fetchBody(RELEASES_LATEST_URL)) {
+    private fun requestLatestRelease(repo: String): CheckResult {
+        return when (val body = fetchBody(latestUrl(repo))) {
             is BodyResult.Error -> CheckResult.Failure(body.reason)
             is BodyResult.Ok -> {
                 val json = try {
@@ -175,8 +242,8 @@ object UpdateChecker {
     }
 
     /** 预发布通道：GET /releases（数组、按发布时间倒序），取第一条非 Draft 且带 tag_name 的版本 */
-    private fun requestReleaseList(): CheckResult {
-        return when (val body = fetchBody(RELEASES_LIST_URL)) {
+    private fun requestReleaseList(repo: String): CheckResult {
+        return when (val body = fetchBody(listUrl(repo))) {
             is BodyResult.Error -> CheckResult.Failure(body.reason)
             is BodyResult.Ok -> {
                 val array = try {
@@ -238,16 +305,25 @@ object UpdateChecker {
             json.optJSONArray("assets")?.let { arr ->
                 for (i in 0 until arr.length()) {
                     val a = arr.optJSONObject(i) ?: continue
-                    add(Asset(a.optString("name"), a.optString("browser_download_url")))
+                    add(
+                        Asset(
+                            name = a.optString("name"),
+                            downloadUrl = a.optString("browser_download_url"),
+                            size = a.optLong("size"),
+                            digest = a.optString("digest")
+                        )
+                    )
                 }
             }
         }
-        val body = json.optString("body")
+        val rawBody = json.optString("body")
+        // 说明正文只在这一处清洗（UpdateSheet / 网盘链接提取读到的都是清洗后的那份，别再各清一遍）
+        val body = cleanReleaseNotes(rawBody)
         val prerelease = json.optBoolean("prerelease")
         Log.d(
             TAG,
             "获取最新 Release 成功：$tag（${if (prerelease) "预发布版；" else ""}资产 ${assets.size} 个；" +
-                "说明 ${body.length} 字；网盘链接=${netdiskDownloadUrl(body) ?: "无"}）"
+                "说明 ${rawBody.length} 字 → 过滤装饰后 ${body.length} 字；网盘链接=${netdiskDownloadUrl(body) ?: "无"}）"
         )
         return CheckResult.Success(
             Release(
