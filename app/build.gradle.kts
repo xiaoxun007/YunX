@@ -49,10 +49,10 @@ android {
         minSdk = 24
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
-        // 上游 1.2.9（#141~#164，含 Gopeed 内核）已合入；merge 轮不 bump 版本。
-        // 上游 1.2.8（#128~#133）后 fork 后缀：1.2.8-gh1=36 …… 1.2.8-gh4=39。
-        versionCode = 39
-        versionName = "1.2.8-gh4"
+        // 上游 1.2.9（#141~#164，含 Gopeed 内核）已合入；fork 后缀随主线重计。
+        // 1.2.9-gh1 = 40（merge 上游 1.2.9 + Gopeed 接入 fork 网络层）。
+        versionCode = 40
+        versionName = "1.2.9-gh1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
