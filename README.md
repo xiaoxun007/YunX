@@ -4,9 +4,9 @@
 
 # 云析 · YunX
 
-**粘贴分享链接，直接高速下载 —— 一个开源的 Android 网盘解析下载应用**
+**粘贴分享链接，直接高速下载 —— 一个开源的 Android 网盘 / 视频解析下载应用**
 
-识别夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版 分享链接，自动匹配提取码，Range 分片并发 + 断点续传。
+识别夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版 的分享链接并自动匹配提取码；也能解析抖音 / 小红书 / 快手 / 微博 / AcFun / 哔哩哔哩 / Pixiv 的视频与图集。Range 分片并发 + 断点续传，图片 / 视频 / 音频可在线预览。
 
 [![Release](https://img.shields.io/github/v/release/CYQawa/YunX?style=flat-square\&label=release\&color=4C8BF5)](https://github.com/CYQawa/YunX/releases/latest)
 [![Stars](https://img.shields.io/github/stars/CYQawa/YunX?style=flat-square\&logo=github\&color=4C8BF5)](https://github.com/CYQawa/YunX/stargazers)
@@ -26,7 +26,7 @@
 
 > **云析使用AGPL-3.0开源协议** 如果你使用了云析的代码，未经授权请遵守协议，同样以AGPL-3.0开放源代码
 
-> 本仓库为仅安卓端app，PC端可见 [YunX-Desktop](https://github.com/tidain/YunX-Desktop)
+> 本仓库为 Android 端 App；PC 端见 [YunX-Desktop](https://github.com/tidain/YunX-Desktop)
 
 ## 截图
 
@@ -39,9 +39,17 @@
 
 ## 功能
 
-- **分享链接解析** —— 识别夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版 的分享链接，自动匹配提取码
+- **网盘分享链接解析** —— 识别夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版 的分享链接，自动匹配提取码
+
+- **视频链接解析** —— 粘贴抖音 / 小红书 / 快手 / 微博 / AcFun 的分享链接免登录直出直链；哔哩哔哩登录后画质更高，Pixiv 未登录只能拿到部分公开作品、在「账号」页粘贴浏览器 Cookie 后可解析全部作品（含 R18 与受限作品），哔哩哔哩的音视频分轨由应用内部合轨（不依赖 ffmpeg）
 
 - **高速下载** —— Range 分片并发 + 断点续传，任务保存请求头与固定分片规划，并发上限 32
+
+- **在线预览与播放** —— 图片 / 视频 / 音频直接在线播放（逐请求带上 Referer / Cookie，直链不再 403）；网盘里的常见文本文件也能在线打开
+
+- **图集两列网格** —— 图文笔记直接把图铺成两列，点开可翻页 / 双指放大 / 单张下载，长按进入多选批量下载
+
+- **下载自动归组** —— 整个文件夹、或一次批量下载的图片，在下载页收纳成一个可折叠分组
 
 - **临时转存清理** —— 百度 / 迅雷 / 光鸭取链后清理；夸克保留到下载完成或删除任务后清理
 
@@ -107,6 +115,8 @@
 
 ## 支持平台
 
+**网盘**
+
 - 夸克网盘
 
 - UC 网盘
@@ -127,28 +137,46 @@
 
 - 蓝奏云优享版
 
+**视频 / 图集**
+
+- 抖音
+
+- 小红书
+
+- 快手
+
+- 微博
+
+- AcFun
+
+- 哔哩哔哩（需登录才能解析高清）
+
+- Pixiv（未登录只能拿到部分公开作品；不支持网页登录，可在「账号」页粘贴浏览器 Cookie 以解析全部作品）
+
 > \[!WARNING]
 > **不建议使用百度网盘，可能导致账号被风控！**
 
 > \[!NOTE]
-> 其他网盘暂未支持，如有需要请开一个 [issue](https://github.com/CYQawa/YunX/issues)。
+> 其他网盘与视频平台暂未支持，如有需要请开一个 [issue](https://github.com/CYQawa/YunX/issues)。
 
 ## 使用
 
-1. 在「网盘」页登录需要使用的网盘账号
-2. 在「解析」页粘贴分享链接（可带提取码）
-3. 浏览分享内容，点击文件获取下载直链
+1. 在「账号」页登录需要使用的网盘账号（需要登录的视频平台也在这里登录）
+2. 在「解析」页粘贴链接（可带提取码）：分享链接解析网盘，视频链接会自动识别平台
+3. 网盘链接浏览分享内容、点击文件获取下载直链；视频链接在结果页直接预览或下载，图片笔记长按可多选
 4. 在「下载」页查看进度，支持暂停 / 继续 / 删除 / 打开
 
 ## 技术栈
 
-| 分类  | 选型                                |
-| --- | --------------------------------- |
-| 语言  | Kotlin                            |
-| UI  | Jetpack Compose + Material 3      |
-| 持久化 | Room（KSP 注解处理）+ SharedPreferences |
-| 网络  | OkHttp 4.12.0（请求 + 分片下载）          |
-| 构建  | Gradle + KSP                      |
+| 分类    | 选型                                           |
+| ----- | -------------------------------------------- |
+| 语言    | Kotlin                                       |
+| UI    | Jetpack Compose + Material 3                 |
+| 持久化   | Room（KSP 注解处理）+ SharedPreferences            |
+| 网络    | OkHttp 4.12.0（请求 + 分片下载）                     |
+| 预览播放  | Media3 ExoPlayer / Coil 3                    |
+| 音视频合轨 | MediaExtractor + MediaMuxer（系统原生，逐样本重封装不重编码） |
+| 构建    | Gradle + KSP                                 |
 
 ## 构建
 
@@ -171,16 +199,16 @@ git clone https://github.com/xiaoxun007/YunX.git
 <details>
 <summary><b>百度网盘下载/转存不了？</b></summary>
 
-你的账号被风控了，见issue #9
+你的账号被风控了，见[issue #9](https://github.com/CYQawa/YunX/issues/9)
 
 </details>
 
 <details>
-<summary><b>能否开发PC端？</b></summary>
+<summary><b>有PC端吗？</b></summary>
 
-我个人没有电脑，故无法开发pc端。
+有。官方 PC 端由协作者 雑魚（[tidain](https://github.com/tidain)）开发维护：[YunX-Desktop](https://github.com/tidain/YunX-Desktop)
 
-社区内已有人开发PC移植， 如 [YunX-Desktop](https://github.com/tidain/YunX-Desktop)
+由于作者没有电脑、无法开发 PC 端，**PC 端的开发与维护由 雑魚 独立负责，作者不参与**；PC 端相关的功能与问题请到对应仓库反馈。
 
 </details>
 

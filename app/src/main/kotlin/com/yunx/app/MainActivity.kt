@@ -55,6 +55,12 @@ class MainActivity : ComponentActivity() {
             2 -> setTheme(R.style.Theme_ComposeEmptyActivity_Dark)
         }
         super.onCreate(savedInstanceState)
+        // ★ 调试构建开放 WebView 远程调试：真机上排查登录页问题（DevTools / chrome://inspect / CDP）
+        //   只能靠它 —— 登录页的失败往往只发生在页面内部的 XHR 上，应用的加载回调看不到。
+        //   用 FLAG_DEBUGGABLE 判断而不是 BuildConfig：为一行代码去打开 buildConfig 特性不划算。
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            android.webkit.WebView.setWebContentsDebuggingEnabled(true)
+        }
         enableEdgeToEdge()
         runCatching {
             val hits = ArchiveProbe.fast(this).toMutableList()

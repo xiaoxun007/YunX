@@ -64,6 +64,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Power
@@ -73,6 +74,7 @@ import androidx.compose.material.icons.outlined.Route
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SwapHoriz
+import androidx.compose.material.icons.outlined.SwitchAccount
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VolunteerActivism
@@ -214,11 +216,19 @@ fun SettingsScreen(
     aboutRowModifier: Modifier = Modifier,
     supportRowModifier: Modifier = Modifier,
     engineRowModifier: Modifier = Modifier,
+    /** 「链接唤起」行的容器变换源侧修饰符（同上，由 MainScreen 构造） */
+    linkOpenRowModifier: Modifier = Modifier,
+    /** 「多账号下载」行的容器变换源侧修饰符（同上，由 MainScreen 构造） */
+    multiAccountRowModifier: Modifier = Modifier,
     onThemeClick: () -> Unit,
     onAboutClick: () -> Unit,
     onSupportClick: () -> Unit,
     /** 打开下载引擎页（两套下载器切换、导入内核、引擎启停与状态） */
     onGopeedClick: () -> Unit,
+    /** 打开「链接唤起」页（深链接注册项的逐个开关） */
+    onLinkOpenClick: () -> Unit,
+    /** 打开「多账号下载」页（两个实验性开关：多账号轮流取链 / 单文件多源分片） */
+    onMultiAccountDownloadClick: () -> Unit,
     backupManager: AuthBackupManager,
     /** 手动检查更新（弹窗与下载逻辑都由 MainScreen 统一持有，设置页不再自己实现一份） */
     onCheckUpdate: () -> Unit,
@@ -419,6 +429,19 @@ fun SettingsScreen(
             title = "下载线程数",
             description = "按网盘分别设置分片并发数（默认 32，最高 512）",
             onClick = { showThreadsDialog = true }
+        )
+
+        Spacer(modifier = Modifier.height(ListGroupGap))
+
+        // 多账号下载（实验性）：只做入口，两个开关在独立页面里改（开启前有二次风险确认）；
+        // 「实验性」徽标只标在里面那两个开关上，入口这一行不重复标
+        SettingsItem(
+            icon = Icons.Outlined.SwitchAccount,
+            shape = listGroupShape(ListGroupPos.MIDDLE),
+            title = "多账号下载",
+            description = "实验性：同一网盘多个账号轮流取链 / 单文件多源提速",
+            modifier = multiAccountRowModifier,
+            onClick = onMultiAccountDownloadClick
         )
 
         Spacer(modifier = Modifier.height(ListGroupGap))
@@ -748,6 +771,18 @@ fun SettingsScreen(
             title = "导入网盘认证",
             description = "选择加密或明文的认证备份文件，恢复网盘登录",
             onClick = { importLauncher.launch(arrayOf("application/json", "application/octet-stream", "*/*")) }
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        SectionLabel("链接唤起")
+        SettingsItem(
+            icon = Icons.Outlined.Link,
+            shape = listGroupShape(ListGroupPos.SINGLE),
+            title = "网盘链接一键唤起",
+            description = "点分享链接（或分享到云析）直接进来解析；可按平台逐个开关",
+            modifier = linkOpenRowModifier,
+            onClick = onLinkOpenClick
         )
 
         Spacer(modifier = Modifier.height(24.dp))

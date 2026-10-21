@@ -91,6 +91,9 @@ class YunXApp : Application() {
         // key blob 三种形态），此时要记下「登录态已失效」的一次性提示，而不是把 Keystore 异常
         // 抛到主线程把 App 崩掉（1.2.8 的三份崩溃报告）。
         com.yunx.app.data.security.CredentialStore.installRecovery(this)
+        // 隐藏 WebView 解析通道：需要跟踪「当前前台 Activity」以便把隐藏 WebView 挂上窗口
+        // （不挂窗口的话 requestAnimationFrame / visibilityState 会不对，页面初始化脚本可能卡住）
+        com.yunx.app.data.network.video.HeadlessWebView.install(this)
         // 启动时恢复用户配置的 HTTP 代理（任何异常都不得影响应用启动）
         runCatching {
             val prefs = getSharedPreferences("yunx_settings", Context.MODE_PRIVATE)
@@ -113,6 +116,10 @@ class YunXApp : Application() {
         com.yunx.app.util.DiagnosticLog.install(this)
         // 下载调试：读开关（默认关）。必须在任何下载开始之前装配，否则开关打开后先建的任务收不到事件
         com.yunx.app.data.download.DownloadDebugLog.install(this)
+        // 链接唤起（深链接）：把用户设置刷到清单里那些 activity-alias 的启停状态。
+        // 设置里改开关是即时同步的，这里兜安装后首次启动与「改过开关又重装/清数据」的对齐；
+        // 任何异常都只记日志，绝不影响启动。
+        runCatching { com.yunx.app.util.LinkOpener.syncAll(this) }
         // 选了 Gopeed 引擎且已导入内核：启动就把它加载起来（失败只记日志，绝不影响应用启动）
         autoStartGopeedIfSelected(this)
     }

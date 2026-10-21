@@ -49,7 +49,7 @@ android {
         minSdk = 24
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
-        // 上游 1.2.9（#141~#164，含 Gopeed 内核）已合入；fork 后缀随主线重计。
+        // 上游 1.3.0（#178~#196，深链接/多账号/B站/小红书/抖音等）已合入；merge 轮不 bump。
         // 1.2.9-gh1 = 40（merge 上游 1.2.9 + Gopeed 接入 fork 网络层）。
         versionCode = 40
         versionName = "1.2.9-gh1"
@@ -134,6 +134,13 @@ dependencies {
     // GitHub README 的 GFM 渲染（表格/嵌套列表/代码高亮/折叠/图片）
     implementation(libs.markdownRenderer)
 
+    // 在线预览/播放：ExoPlayer（可带请求头、支持 HLS）+ 官方 PlayerView
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+    implementation(libs.androidx.media3.hls)
+    // 图片加载（封面/图集；网络走 OkHttp，可逐请求带 Referer/Cookie）
+    implementation(libs.androidx.coil.compose)
+    implementation(libs.androidx.coil.network.okhttp)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.webkit)   // 登录 WebView 关闭 X-Requested-With（见 DiagnosticWebViewClient.suppressRequestedWithHeader）
     implementation(libs.androidx.lifecycle.runtime.ktx)
