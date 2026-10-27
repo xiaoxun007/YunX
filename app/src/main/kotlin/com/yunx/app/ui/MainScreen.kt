@@ -158,7 +158,6 @@ import com.yunx.app.ui.navigation.MainTab
 import com.yunx.app.ui.preview.MediaPreviewScreen
 import com.yunx.app.ui.preview.PreviewLauncher
 import com.yunx.app.ui.screens.AboutScreen
-import com.yunx.app.ui.screens.AnnouncementPopupDialog
 import com.yunx.app.ui.screens.AnnouncementScreen
 import com.yunx.app.ui.screens.AnnouncementUnreadBadge
 import com.yunx.app.ui.screens.BookmarkScreen
@@ -295,7 +294,7 @@ fun MainScreen(
     var showBookmarks by rememberSaveable { mutableStateOf(false) }
     var showGopeed by rememberSaveable { mutableStateOf(false) }
     var showAnnouncements by rememberSaveable { mutableStateOf(false) }
-    /** 启动公告弹窗点「查看详情」时带进去的公告 id（null = 从图标进来先看列表） */
+    /** 进公告页时直接落到哪条详情（启动弹窗已移除，恒为 null；从图标进先看列表） */
     var announcementDetailId by rememberSaveable { mutableStateOf<String?>(null) }
     val saveableStateHolder = rememberSaveableStateHolder()
 
@@ -367,18 +366,20 @@ fun MainScreen(
         }
     }
     /**
-     * 应用内公告：顶栏红点角标 + 启动弹窗。
+     * 应用内公告：顶栏红点角标。
      *
-     * 启动检查（[AnnouncementViewModel.checkStartup]）整个会话只跑一次：一次列表请求同时决定
-     * 「角标数字」与「弹窗展示哪一条」—— 有未读的置顶公告就弹它，否则弹最新的一条未读，全读完则不弹。
+     * 启动检查（[AnnouncementViewModel.checkStartup]）整个会话只跑一次：一次列表请求决定「角标数字」。
      * 失败静默（与上面的更新检查同一口径），用户点进公告页时会再拉一次并把错误显示出来。
+     *
+     * ★ fork 偏离（相对 Agent.md §3.35）：**不再弹启动公告弹窗** —— 用户明确要求 fork 不展示公告弹窗，
+     *   因此不收集 `AnnouncementViewModel.popup`、也不渲染 `AnnouncementPopupDialog`（弹窗触发点已移除）；
+     *   公告入口（顶栏图标）、未读角标、列表页与详情页全部保留。其余公告代码原样保留，便于同步上游。
      */
     val announcementReadStore = remember { AnnouncementReadStore(context) }
     val announcementViewModel: AnnouncementViewModel = viewModel(
         factory = AnnouncementViewModel.Factory(announcementReadStore)
     )
     val unreadAnnouncementCount by announcementViewModel.unreadCount.collectAsState()
-    val popupAnnouncement by announcementViewModel.popup.collectAsState()
     LaunchedEffect(Unit) { announcementViewModel.checkStartup() }
 
 
@@ -1517,7 +1518,7 @@ fun MainScreen(
                             OVERLAY_KEY_ANNOUNCEMENTS -> AnnouncementScreen(
                                 viewModel = announcementViewModel,
                                 onBack = { showAnnouncements = false },
-                                // 启动弹窗点了「查看详情」就直接落在详情页（列表 ↔ 详情的共享元素在页面内部）
+                                // 从图标进 = 先看列表（启动弹窗已移除，announcementDetailId 恒为 null）
                                 initialDetailId = announcementDetailId
                             )
                             else -> BookmarkScreen(
@@ -1705,19 +1706,6 @@ fun MainScreen(
                     credentialLostNotice = false
                 }) { Text("知道了") }
             }
-        )
-    }
-
-    // 启动公告弹窗：展示未读的置顶公告（没有则最新未读）。两个出口都算已读，见 AnnouncementViewModel.consumePopup
-    popupAnnouncement?.let { announcement ->
-        AnnouncementPopupDialog(
-            announcement = announcement,
-            onDetail = {
-                announcementDetailId = announcement.id
-                showAnnouncements = true
-                announcementViewModel.consumePopup()
-            },
-            onDismiss = { announcementViewModel.consumePopup() }
         )
     }
 

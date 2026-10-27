@@ -1212,6 +1212,14 @@ dismissOnClickOutside = false))`，25MB 的下载不该被一次误触甩掉；�
 
 ### 3.35 应用内公告（远程列表 / 启动弹窗 / 未读角标）
 
+> **★ fork 偏离注记（2026-10-28，供同步上游时对照）**：本 fork 已按用户要求**移除启动公告弹窗** ——
+> `MainScreen.kt` 不再收集 `AnnouncementViewModel.popup`、不再渲染 `AnnouncementPopupDialog`
+> （原弹窗渲染块已删除，见 MainScreen.kt「应用内公告」注释）。**其余公告能力全部保留**：
+> 顶栏入口图标、未读角标、列表页、详情页、`AnnouncementViewModel` 的 `checkStartup()` /
+> `pickPopupCandidate()` / `consumePopup()`、数据层三个文件均未动。因此本节描述的「启动弹窗候选 /
+> 关掉启动弹窗算已读」逻辑**在代码中仍存在但不再被 UI 触发**；弹窗相关行为一律以「不弹」为准。
+> 目的：保留代码以最小化上游同步冲突（上游 1.2.9+ 公告模块仍在），日后恢复或彻底下线都容易。
+
 后端是一个独立的公告服务（当前是 **PHP + SQLite 虚拟主机版**，域名 `http://yunx.cyqawa.os.kg`；
 接口路径 / 参数 / 响应结构 / 错误码与原 Cloudflare Workers 版**完全一致**，只有域名与协议变了）。
 客户端只用**两个公开接口**：`GET /api/v1/announcements?page=&pageSize=`（列表，**不含正文**）与
