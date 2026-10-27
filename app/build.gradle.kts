@@ -50,9 +50,9 @@ android {
         targetSdk = 34
         // 与上游 CYQawa/YunX 版本号对齐；fork 构建在 versionName 后加 "-gh<n>" 后缀以区分。
         // 上游 1.3.0（#178~#196，深链接/多账号/B站/小红书/抖音等）已合入；fork 后缀随主线重计。
-        // 1.3.0-gh1 = 41（merge 上游 1.3.0）。
-        versionCode = 41
-        versionName = "1.3.0-gh1"
+        // 1.3.0-gh1 = 41（merge 上游 1.3.0）；1.3.0-gh2 = 42（merge 上游 #202/#204/#206/#208 + 公告弹窗移除）。
+        versionCode = 42
+        versionName = "1.3.0-gh2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
