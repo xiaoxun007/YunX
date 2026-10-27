@@ -90,6 +90,7 @@ class YunXApp : Application() {
         // 里的密钥被系统永久作废（KeyPermanentlyInvalidatedException / Key not found / Invalid
         // key blob 三种形态），此时要记下「登录态已失效」的一次性提示，而不是把 Keystore 异常
         // 抛到主线程把 App 崩掉（1.2.8 的三份崩溃报告）。
+        // ★ fork 保留 Keystore 字段级加密（上游 #208 已改明文，fork 按既定偏好保留，见 Agent.md §3.6）。
         com.yunx.app.data.security.CredentialStore.installRecovery(this)
         // 隐藏 WebView 解析通道：需要跟踪「当前前台 Activity」以便把隐藏 WebView 挂上窗口
         // （不挂窗口的话 requestAnimationFrame / visibilityState 会不对，页面初始化脚本可能卡住）

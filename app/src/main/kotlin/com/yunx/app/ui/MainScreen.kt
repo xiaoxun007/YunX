@@ -403,8 +403,10 @@ fun MainScreen(
      * ★ 位置必须在 `AppDatabase.get()` **之后**：注册「密钥被重建」监听、以及第一次读账号
      *   都发生在建库那一步，之前读标记只会读到旧值，导致本次启动不弹、要等下次启动才弹。
      * ★ 标记写在 SharedPreferences 里，所以进程被杀后重启仍会补弹，直到用户点「知道了」。
+     * ★ fork 保留 Keystore 字段级加密（上游 #208 已改明文，fork 按既定偏好保留，见 Agent.md §3.6 注记）。
      */
     var credentialLostNotice by remember { mutableStateOf(CredentialStore.hasKeyLostNotice(context)) }
+
     val settings = remember { SettingsRepository(context) }
     val repository = remember {
         QuarkAccountRepository(db.quarkAccountDao(), api)
@@ -438,7 +440,7 @@ fun MainScreen(
     val lanzouRepository = remember {
         LanzouAccountRepository(db.lanzouAccountDao(), lanzouApi)
     }
-    // 网盘认证备份：打包/恢复各平台凭证
+    // 认证备份：打包/恢复各平台凭证（网盘 + 视频解析平台）
     val backupManager = remember {
         AuthBackupManager(
             db.quarkAccountDao(),
@@ -450,7 +452,8 @@ fun MainScreen(
             db.pan115AccountDao(),
             db.guangyaAccountDao(),
             db.ilanzouAccountDao(),
-            db.lanzouAccountDao()
+            db.lanzouAccountDao(),
+            db.videoAccountDao()
         )
     }
     // GitHub API 封装：Token 从 GitHubTokenStore 动态读取（Keystore 加密），提升 API 限额
@@ -603,6 +606,10 @@ fun MainScreen(
         else xunleiApi.refreshToken(acc.refreshToken, deviceId, acc.authType)?.also { (at, nrt) ->
             xunleiRepository.updateTokens(at, nrt)
         }
+    }
+    // 网页登录的 captcha：本地 9 盐签名现换（快、后台可用），签名被拒才回退网页会话
+    xunleiApi.webCaptchaRefresher = { deviceId, action ->
+        xunleiRepository.refreshWebCaptcha(deviceId, action)
     }
     // 迅雷云盘浏览：点击已登录的迅雷卡片打开（access_token/设备指纹/captcha 从数据库读取）
     val xunleiCloudViewModel: XunleiCloudViewModel = viewModel(
@@ -1695,6 +1702,7 @@ fun MainScreen(
     }
 
     // 本机密钥失效提示：只在「真的丢了密钥、凭证已被清空」时弹一次（标记由数据层写入）
+    // ★ fork 保留 Keystore 字段级加密（见 Agent.md §3.6 fork 偏离注记），故此弹窗逻辑保留。
     if (credentialLostNotice) {
         AlertDialog(
             onDismissRequest = { },
